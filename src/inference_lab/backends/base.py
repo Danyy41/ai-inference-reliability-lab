@@ -10,6 +10,9 @@ class GenerationResult:
     prompt_tokens: int
     completion_tokens: int
     finish_reason: str = "stop"
+    gpu_memory_allocated_mb: float | None = None
+    gpu_memory_reserved_mb: float | None = None
+    gpu_memory_peak_mb: float | None = None
 
 
 class InferenceBackend(ABC):

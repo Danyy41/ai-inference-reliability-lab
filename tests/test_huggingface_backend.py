@@ -22,6 +22,14 @@ async def test_generate_returns_real_text_and_token_counts(tiny_backend):
     assert result.finish_reason in {"stop", "length"}
 
 
+async def test_generate_has_no_gpu_memory_fields_on_cpu(tiny_backend):
+    result = await tiny_backend.generate(prompt="Hello world", max_tokens=8)
+
+    assert result.gpu_memory_allocated_mb is None
+    assert result.gpu_memory_reserved_mb is None
+    assert result.gpu_memory_peak_mb is None
+
+
 async def test_generate_respects_max_tokens_cap(tiny_backend):
     result = await tiny_backend.generate(prompt="Hi", max_tokens=1000)
 

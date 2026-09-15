@@ -13,6 +13,10 @@ async def test_generate_returns_completion(client):
     assert body["completion_tokens"] >= 1
     assert body["finish_reason"] in {"stop", "length"}
     assert body["latency_ms"] >= 0
+    assert body["tokens_per_second"] >= 0
+    assert body["gpu_memory_allocated_mb"] is None
+    assert body["gpu_memory_reserved_mb"] is None
+    assert body["gpu_memory_peak_mb"] is None
     assert "X-Process-Time-Ms" in response.headers
 
 
