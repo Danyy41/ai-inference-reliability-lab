@@ -27,6 +27,14 @@ def build_backend() -> InferenceBackend:
             min_latency_ms=settings.mock_min_latency_ms,
             max_latency_ms=settings.mock_max_latency_ms,
         )
+    if settings.backend == "huggingface":
+        from inference_lab.backends.huggingface import HuggingFaceBackend
+
+        return HuggingFaceBackend(
+            model_name=settings.huggingface_model_name,
+            device=settings.huggingface_device,
+            max_new_tokens_cap=settings.huggingface_max_new_tokens_cap,
+        )
     raise ValueError(f"Unknown backend: {settings.backend}")
 
 

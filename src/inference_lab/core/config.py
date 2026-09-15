@@ -7,10 +7,14 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INFERENCE_LAB_", env_file=".env")
 
     app_name: str = "AI Inference Reliability Lab"
-    backend: str = "mock"  # swap to "vllm" once that backend exists
+    backend: str = "mock"  # "mock" | "huggingface" (vLLM planned for a later version)
     log_level: str = "INFO"
     mock_min_latency_ms: int = 50
     mock_max_latency_ms: int = 300
+
+    huggingface_model_name: str = "sshleifer/tiny-gpt2"
+    huggingface_device: str = "cpu"
+    huggingface_max_new_tokens_cap: int = 256
 
 
 settings = Settings()
