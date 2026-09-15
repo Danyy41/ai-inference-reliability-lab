@@ -1,0 +1,85 @@
+import asyncio
+import logging
+import time
+
+from inference_lab.backends.base import GenerationResult, InferenceBackend
+
+logger = logging.getLogger(__name__)
+
+
+class HuggingFaceBackend(InferenceBackend):
+    """Real local inference backend using a Hugging Face Transformers model.
+
+    The model and tokenizer are loaded once, at construction time, and reused
+    for every request - loading a model per-request would make latency
+    dominated by disk/network I/O rather than generation. Generation itself
+    is synchronous/CPU-bound, so it runs on a worker thread to avoid blocking
+    the FastAPI event loop.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        device: str = "cpu",
+        max_new_tokens_cap: int = 256,
+    ) -> None:
+        # Imported lazily so a mock-only install never needs torch/transformers.
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self._torch = torch
+        self._device = device
+        self._max_new_tokens_cap = max_new_tokens_cap
+
+        logger.info("Loading Hugging Face model %s on %s", model_name, device)
+        start = time.perf_counter()
+
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+        self._model = AutoModelForCausalLM.from_pretrained(model_name)
+        self._model.to(device)
+        self._model.eval()
+
+        load_time_ms = (time.perf_counter() - start) * 1000
+        logger.info("Loaded Hugging Face model %s in %.2f ms", model_name, load_time_ms)
+
+    async def generate(self, prompt: str, max_tokens: int) -> GenerationResult:
+        max_tokens = min(max_tokens, self._max_new_tokens_cap)
+        return await asyncio.to_thread(self._generate_sync, prompt, max_tokens)
+
+    def _generate_sync(self, prompt: str, max_tokens: int) -> GenerationResult:
+        torch = self._torch
+        start = time.perf_counter()
+
+        inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
+        prompt_tokens = inputs["input_ids"].shape[-1]
+
+        with torch.no_grad():
+            output_ids = self._model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                pad_token_id=self._tokenizer.pad_token_id,
+            )
+
+        completion_ids = output_ids[0][prompt_tokens:]
+        completion_tokens = completion_ids.shape[-1]
+        text = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
+
+        generation_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "Generated %d completion tokens in %.2f ms (%.2f tok/s)",
+            completion_tokens,
+            generation_ms,
+            completion_tokens / (generation_ms / 1000) if generation_ms > 0 else 0.0,
+        )
+
+        finish_reason = "length" if completion_tokens >= max_tokens else "stop"
+
+        return GenerationResult(
+            text=text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            finish_reason=finish_reason,
+        )
