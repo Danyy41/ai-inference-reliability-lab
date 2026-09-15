@@ -16,3 +16,7 @@ class GenerateResponse(BaseModel):
     completion_tokens: int
     finish_reason: str
     latency_ms: float
+    tokens_per_second: float
+    gpu_memory_allocated_mb: float | None = None
+    gpu_memory_reserved_mb: float | None = None
+    gpu_memory_peak_mb: float | None = None

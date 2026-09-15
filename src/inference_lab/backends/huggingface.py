@@ -15,23 +15,31 @@ class HuggingFaceBackend(InferenceBackend):
     dominated by disk/network I/O rather than generation. Generation itself
     is synchronous/CPU-bound, so it runs on a worker thread to avoid blocking
     the FastAPI event loop.
+
+    The requested device ("auto", "cpu", or "cuda") is resolved once here via
+    device.detect_device(), so the same code runs unmodified on a CPU-only
+    machine and on a cloud NVIDIA GPU.
     """
 
     def __init__(
         self,
         model_name: str,
-        device: str = "cpu",
+        device: str = "auto",
         max_new_tokens_cap: int = 256,
     ) -> None:
         # Imported lazily so a mock-only install never needs torch/transformers.
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        from inference_lab.backends.device import detect_device, log_device_info
+
         self._torch = torch
-        self._device = device
+        self._device = detect_device(device)
         self._max_new_tokens_cap = max_new_tokens_cap
 
-        logger.info("Loading Hugging Face model %s on %s", model_name, device)
+        log_device_info(self._device)
+
+        logger.info("Loading Hugging Face model %s on %s", model_name, self._device)
         start = time.perf_counter()
 
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -39,7 +47,7 @@ class HuggingFaceBackend(InferenceBackend):
             self._tokenizer.pad_token = self._tokenizer.eos_token
 
         self._model = AutoModelForCausalLM.from_pretrained(model_name)
-        self._model.to(device)
+        self._model.to(self._device)
         self._model.eval()
 
         load_time_ms = (time.perf_counter() - start) * 1000
@@ -50,7 +58,10 @@ class HuggingFaceBackend(InferenceBackend):
         return await asyncio.to_thread(self._generate_sync, prompt, max_tokens)
 
     def _generate_sync(self, prompt: str, max_tokens: int) -> GenerationResult:
+        from inference_lab.backends.device import get_gpu_memory_stats, reset_gpu_memory_stats
+
         torch = self._torch
+        reset_gpu_memory_stats(self._device)
         start = time.perf_counter()
 
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
@@ -68,11 +79,14 @@ class HuggingFaceBackend(InferenceBackend):
         text = self._tokenizer.decode(completion_ids, skip_special_tokens=True)
 
         generation_ms = (time.perf_counter() - start) * 1000
+        gpu_memory = get_gpu_memory_stats(self._device)
+
         logger.info(
-            "Generated %d completion tokens in %.2f ms (%.2f tok/s)",
+            "Generated %d completion tokens in %.2f ms (%.2f tok/s)%s",
             completion_tokens,
             generation_ms,
             completion_tokens / (generation_ms / 1000) if generation_ms > 0 else 0.0,
+            f" gpu_memory={gpu_memory}" if gpu_memory else "",
         )
 
         finish_reason = "length" if completion_tokens >= max_tokens else "stop"
@@ -82,4 +96,5 @@ class HuggingFaceBackend(InferenceBackend):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             finish_reason=finish_reason,
+            **(gpu_memory or {}),
         )

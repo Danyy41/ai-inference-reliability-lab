@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     mock_max_latency_ms: int = 300
 
     huggingface_model_name: str = "sshleifer/tiny-gpt2"
-    huggingface_device: str = "cpu"
+    huggingface_device: str = "auto"  # "auto" | "cpu" | "cuda"
     huggingface_max_new_tokens_cap: int = 256
 
 

@@ -5,7 +5,7 @@ performance and infrastructure failures, diagnose them with metrics, fix
 them, and benchmark the improvement.
 
 This is a portfolio project developed in stages. **This README covers
-Versions 0.1 and 0.2.**
+Versions 0.1, 0.2, and Phase 3A.**
 
 ## Version 0.1 scope
 
@@ -29,6 +29,24 @@ Versions 0.1 and 0.2.**
 - Not included yet (planned for later versions): vLLM, Docker, Kubernetes,
   Prometheus/Grafana, GPU infrastructure, load balancing/scaling failures.
 
+## Phase 3A scope: NVIDIA GPU awareness and performance metrics
+
+- Automatic device selection for the Hugging Face backend: `auto` resolves to
+  `cuda` if an NVIDIA GPU is available, otherwise `cpu` - the same backend
+  code runs unmodified on a CPU-only laptop and on a cloud NVIDIA GPU.
+- Startup logging of the selected device, CUDA availability, GPU name (if
+  any), and the PyTorch CUDA build version.
+- Every `/generate` response now reports `tokens_per_second`, for both
+  backends.
+- On a CUDA device, `/generate` responses also report GPU memory allocated,
+  reserved, and peak-used (in MB) for that generation call; these are `null`
+  on CPU or under the mock backend.
+- New `tests/test_device.py` exercises the device-detection logic on any
+  machine (via mocking `torch.cuda.is_available`) and skips a couple of
+  real-GPU-memory checks when no CUDA GPU is present.
+- Not included yet: actually running on a cloud GPU (Phase 3B), Docker,
+  Kubernetes, Prometheus/Grafana, vLLM, cloud-provider-specific code.
+
 ## Architecture
 
 ```
@@ -43,6 +61,8 @@ FastAPI app (main.py)
   │
   ├─ backends/mock.py        → MockBackend (simulated latency + fake tokens)
   └─ backends/huggingface.py → HuggingFaceBackend (real local model via Transformers)
+        │
+        └─ backends/device.py → device detection, startup logging, GPU memory stats
 ```
 
 The API layer never imports a concrete backend - only the abstract
@@ -67,7 +87,8 @@ src/inference_lab/
 ├── backends/
 │   ├── base.py              # InferenceBackend interface + GenerationResult
 │   ├── mock.py               # MockBackend implementation
-│   └── huggingface.py       # HuggingFaceBackend implementation (real local model)
+│   ├── huggingface.py       # HuggingFaceBackend implementation (real local model)
+│   └── device.py             # CPU/CUDA detection, startup logging, GPU memory stats
 ├── core/
 │   ├── config.py            # env-based settings
 │   └── logging.py           # logging setup
@@ -116,7 +137,14 @@ INFERENCE_LAB_BACKEND=huggingface uvicorn inference_lab.main:app --reload --port
 
 The model downloads once (cached by Hugging Face afterwards) and loads into
 memory at startup - the first request after startup already uses the
-already-loaded model, it does not reload per request.
+already-loaded model, it does not reload per request. At startup you'll see
+a log line like:
+
+```
+Inference device=cpu cuda_available=False gpu_name=None torch_cuda_version=None
+```
+
+(on a cloud GPU this becomes `device=cuda cuda_available=True gpu_name=NVIDIA ...`).
 
 Either way:
 
@@ -128,8 +156,11 @@ curl -X POST http://localhost:8000/generate \
 ```
 
 The response includes `text`, `prompt_tokens`, `completion_tokens`,
-`finish_reason`, and `latency_ms` regardless of which backend is active -
-the API shape does not change between mock and real model mode.
+`finish_reason`, `latency_ms`, and `tokens_per_second` regardless of which
+backend is active - the API shape does not change between mock and real
+model mode. `gpu_memory_allocated_mb`, `gpu_memory_reserved_mb`, and
+`gpu_memory_peak_mb` are also always present, but are `null` unless running
+the Hugging Face backend on a CUDA device.
 
 ### Configuration
 
@@ -141,20 +172,52 @@ All settings are environment variables prefixed `INFERENCE_LAB_` (see
 | `INFERENCE_LAB_BACKEND` | `mock` | `mock` or `huggingface` |
 | `INFERENCE_LAB_LOG_LEVEL` | `INFO` | Python logging level |
 | `INFERENCE_LAB_HUGGINGFACE_MODEL_NAME` | `sshleifer/tiny-gpt2` | Any causal-LM model on the Hugging Face Hub |
-| `INFERENCE_LAB_HUGGINGFACE_DEVICE` | `cpu` | `cpu` or `cuda` (see CPU vs. GPU below) |
+| `INFERENCE_LAB_HUGGINGFACE_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` (see CPU vs. GPU below) |
 | `INFERENCE_LAB_HUGGINGFACE_MAX_NEW_TOKENS_CAP` | `256` | Hard ceiling on tokens generated per request |
 
-### CPU vs. GPU
+### CPU mode
 
-- **CPU** (the default): works everywhere with no extra setup. Generation is
-  slow relative to a GPU, but that's fine for the tiny default model used
-  here for local development.
-- **GPU**: set `INFERENCE_LAB_HUGGINGFACE_DEVICE=cuda` to run the model on an
-  NVIDIA GPU (requires a CUDA-capable GPU, drivers, and a CUDA-enabled
-  `torch` build). A GPU does the matrix math generation needs in parallel,
-  which matters a lot for larger models - not for `tiny-gpt2`, but it will
-  for the bigger models this project moves to later. No GPU scheduling,
-  containers, or orchestration are set up yet; this is just a device switch.
+This is what runs on a machine with no NVIDIA GPU - e.g. a laptop with an
+Intel Iris Xe. With `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto` (the default),
+`backends/device.py` checks `torch.cuda.is_available()`, finds no CUDA GPU,
+and resolves to `cpu`. The model loads onto the CPU and every request runs
+through ordinary CPU tensor ops. No extra setup needed; this is what's been
+tested locally throughout this project. GPU memory fields in the response
+are always `null` here, since there's no GPU to measure.
+
+### CUDA mode
+
+On a machine with an NVIDIA GPU, driver, and CUDA-enabled `torch` build, the
+same `auto` setting resolves to `cuda` instead - no code or config change
+needed, just different hardware underneath. The model loads onto the GPU,
+generation runs there, and the response's `gpu_memory_*` fields get real
+values. Setting `INFERENCE_LAB_HUGGINGFACE_DEVICE=cuda` explicitly forces
+CUDA and raises a clear error immediately if no CUDA GPU is actually
+available, rather than silently falling back to CPU.
+
+**Note:** this repository has been developed and tested on a CPU-only
+machine (no local NVIDIA GPU). The CUDA code path is written and unit
+tested (with `torch.cuda` calls mocked - see `tests/test_device.py`), but
+real GPU benchmarks - actually measuring generation speed and memory usage
+on an NVIDIA GPU - will be run later on a cloud GPU instance (Phase 3B and
+beyond), not in this phase.
+
+### What Phase 3 measures
+
+Every `/generate` call now reports:
+
+- **Input tokens** (`prompt_tokens`) and **output tokens** (`completion_tokens`)
+- **Generation latency** (`latency_ms`)
+- **Tokens per second** (`tokens_per_second`) - `completion_tokens` divided
+  by `latency_ms`, computed the same way for both backends
+- **GPU memory allocated / reserved / peak** (`gpu_memory_*_mb`) - only
+  populated when generation actually ran on a CUDA device; `null` on CPU or
+  under the mock backend
+
+Startup logging (once, when the Hugging Face backend loads) additionally
+reports the selected device, whether CUDA is available, the GPU name if
+any, and the PyTorch CUDA build version - useful for confirming exactly what
+hardware a given benchmark run used.
 
 ### Why `sshleifer/tiny-gpt2`
 
@@ -178,6 +241,12 @@ automatically skipped if the `huggingface` extra isn't installed. When it
 is installed, running them downloads `sshleifer/tiny-gpt2` (~3MB, cached
 after the first run) - no large model download is required.
 
+The device tests (`tests/test_device.py`) run on any machine, including a
+CPU-only one: CPU/CUDA branching logic is tested via mocking
+`torch.cuda.is_available`, while a couple of tests that need to read real
+GPU memory are marked `skipif(not torch.cuda.is_available())` and will only
+actually run once this project is on a machine with an NVIDIA GPU.
+
 ## Running the load test
 
 With the server running in one terminal, run the load test in another:
@@ -200,8 +269,10 @@ ruff check .
 
 ## Roadmap
 
-- **v0.3+**: Add a vLLM backend, containerize with Docker, add Prometheus
-  metrics and Grafana dashboards.
-- **Later**: Kubernetes deployment, GPU scheduling, deliberately induced
-  failure scenarios (latency spikes, OOM, queueing/backpressure issues,
-  autoscaling gaps) with before/after benchmarks.
+- **Phase 3B**: Actually run this project on a cloud NVIDIA GPU and record
+  real CPU-vs-GPU benchmark numbers using the metrics added in Phase 3A.
+- **Later**: Add a vLLM backend, containerize with Docker, add Prometheus
+  metrics and Grafana dashboards, Kubernetes deployment, GPU scheduling,
+  deliberately induced failure scenarios (latency spikes, OOM,
+  queueing/backpressure issues, autoscaling gaps) with before/after
+  benchmarks.
