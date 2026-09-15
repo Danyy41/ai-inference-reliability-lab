@@ -15,8 +15,8 @@ in Phase 3A (`backends/device.py`, `/generate` response fields
 | NVIDIA driver version | 580.159.04 |
 | CUDA level reported by `nvidia-smi` | 13.0 |
 | PyTorch CUDA build (`torch.version.cuda`) | 12.8 |
-| CPU | Not recorded |
-| PyTorch package version | Not recorded |
+| CPU | Intel Xeon Gold 6342 @ 2.80GHz |
+| PyTorch package version | 2.8.0+cu128 |
 
 **Note on the two CUDA numbers:** `nvidia-smi` reports the maximum CUDA
 version the installed driver *supports* (13.0). `torch.version.cuda`
@@ -25,11 +25,11 @@ reports the CUDA version the installed PyTorch *build* actually targets
 driver being newer than the PyTorch build's target CUDA version is normal
 and not an error condition.
 
-The CPU run was performed on the **same RunPod pod** as the GPU run, by
-changing only `INFERENCE_LAB_HUGGINGFACE_DEVICE=cpu` (GPU run used the
-default `auto`, which resolved to `cuda` on this pod). Everything else -
-cloud environment, model, prompt, code path - was identical between the two
-runs; the only variable was the compute device.
+Both runs were performed on the **same RunPod pod**, switching only the
+device setting between them: `INFERENCE_LAB_HUGGINGFACE_DEVICE=cpu` for the
+CPU run and `INFERENCE_LAB_HUGGINGFACE_DEVICE=cuda` for the GPU run.
+Everything else - cloud environment, model, prompt, code path - was
+identical between the two runs; the only variable was the compute device.
 
 ## Model
 
@@ -128,12 +128,6 @@ Identical prompt used for both the CPU and GPU run.
   request end-to-end. Production serving workloads involve concurrent
   requests and batched generation, which change GPU utilization and
   effective throughput substantially - none of that is captured here.
-- **CPU hardware not recorded.** The exact CPU model on the RunPod pod was
-  not recorded, so the CPU-side numbers cannot be tied to specific CPU
-  hardware for reproduction on a different machine.
-- **Exact PyTorch package version not recorded.** Only the CUDA build
-  version PyTorch reported (`torch.version.cuda` = 12.8) is known; the full
-  `torch` package version (e.g. `2.x.y`) was not recorded.
 - **Default generation settings only.** No exploration of sampling
   parameters, batch sizes, or prompt/output lengths beyond this one fixed
   100-token workload.
@@ -143,10 +137,10 @@ Identical prompt used for both the CPU and GPU run.
 ```bash
 pip install -e ".[dev,huggingface]"
 INFERENCE_LAB_HUGGINGFACE_MODEL_NAME=gpt2 \
-INFERENCE_LAB_HUGGINGFACE_DEVICE=auto \
+INFERENCE_LAB_HUGGINGFACE_DEVICE=cuda \
   uvicorn inference_lab.main:app --port 8000
-# then, on a machine with an NVIDIA GPU, INFERENCE_LAB_HUGGINGFACE_DEVICE=auto
-# resolves to cuda; set INFERENCE_LAB_HUGGINGFACE_DEVICE=cpu to force CPU.
+# use INFERENCE_LAB_HUGGINGFACE_DEVICE=cpu to force CPU on the same machine,
+# or =auto to let backends/device.py pick automatically.
 
 curl -X POST http://localhost:8000/generate \
   -H "Content-Type: application/json" \
