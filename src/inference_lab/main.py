@@ -10,6 +10,7 @@ from inference_lab.backends.mock import MockBackend
 from inference_lab.core.config import settings
 from inference_lab.core.logging import configure_logging
 from inference_lab.middleware.timing import TimingMiddleware
+from inference_lab.observability.metrics import set_backend_info
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
@@ -43,7 +44,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(TimingMiddleware)
     app.include_router(router)
-    app.state.backend = build_backend()
+    backend = build_backend()
+    app.state.backend = backend
+
+    device = getattr(backend, "device", "n/a")
+    model = settings.huggingface_model_name if settings.backend == "huggingface" else "n/a"
+    set_backend_info(backend=settings.backend, device=device, model=model)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

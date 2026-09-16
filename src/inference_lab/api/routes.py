@@ -2,8 +2,11 @@ import logging
 import time
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 
 from inference_lab.api.schemas import GenerateRequest, GenerateResponse, HealthResponse
+from inference_lab.core.config import settings
+from inference_lab.observability.metrics import metrics_response, record_generation
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +18,12 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
+@router.get("/metrics")
+async def metrics() -> Response:
+    body, content_type = metrics_response()
+    return Response(content=body, media_type=content_type)
+
+
 @router.post("/generate", response_model=GenerateResponse)
 async def generate(request: Request, body: GenerateRequest) -> GenerateResponse:
     backend = request.app.state.backend
@@ -24,10 +33,25 @@ async def generate(request: Request, body: GenerateRequest) -> GenerateResponse:
         result = await backend.generate(prompt=body.prompt, max_tokens=body.max_tokens)
     except Exception:
         logger.exception("Backend generation failed")
+        record_generation(
+            backend=settings.backend,
+            success=False,
+            duration_seconds=time.perf_counter() - start,
+        )
         raise HTTPException(status_code=502, detail="Inference backend failed") from None
     latency_ms = (time.perf_counter() - start) * 1000
-    tokens_per_second = (
-        result.completion_tokens / (latency_ms / 1000) if latency_ms > 0 else 0.0
+    latency_s = latency_ms / 1000
+    tokens_per_second = result.completion_tokens / latency_s if latency_s > 0 else 0.0
+
+    record_generation(
+        backend=settings.backend,
+        success=True,
+        duration_seconds=latency_s,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        gpu_memory_allocated_mb=result.gpu_memory_allocated_mb,
+        gpu_memory_reserved_mb=result.gpu_memory_reserved_mb,
+        gpu_memory_peak_mb=result.gpu_memory_peak_mb,
     )
 
     return GenerateResponse(

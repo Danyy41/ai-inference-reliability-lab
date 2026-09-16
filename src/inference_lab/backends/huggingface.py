@@ -3,6 +3,7 @@ import logging
 import time
 
 from inference_lab.backends.base import GenerationResult, InferenceBackend
+from inference_lab.observability.metrics import set_model_load_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ class HuggingFaceBackend(InferenceBackend):
 
         load_time_ms = (time.perf_counter() - start) * 1000
         logger.info("Loaded Hugging Face model %s in %.2f ms", model_name, load_time_ms)
+        set_model_load_seconds(backend="huggingface", model=model_name, seconds=load_time_ms / 1000)
+
+    @property
+    def device(self) -> str:
+        """The resolved device ("cpu" or "cuda") this backend is actually running on."""
+        return self._device
 
     async def generate(self, prompt: str, max_tokens: int) -> GenerationResult:
         max_tokens = min(max_tokens, self._max_new_tokens_cap)

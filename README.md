@@ -5,8 +5,9 @@ performance and infrastructure failures, diagnose them with metrics, fix
 them, and benchmark the improvement.
 
 This is a portfolio project developed in stages. **This README covers
-Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results, and
-Phase 4A (Docker containerization).**
+Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results,
+Phase 4A (Docker containerization), and Phase 4B (Prometheus + Grafana
+observability).**
 
 ## Version 0.1 scope
 
@@ -28,7 +29,7 @@ Phase 4A (Docker containerization).**
 - Tests for the new backend that only need a tiny (~3MB) model, not a
   multi-GB download
 - Not included yet (planned for later versions): vLLM, Kubernetes,
-  Prometheus/Grafana, GPU infrastructure, load balancing/scaling failures.
+  GPU infrastructure, load balancing/scaling failures.
 
 ## Phase 3A scope: NVIDIA GPU awareness and performance metrics
 
@@ -45,8 +46,7 @@ Phase 4A (Docker containerization).**
 - New `tests/test_device.py` exercises the device-detection logic on any
   machine (via mocking `torch.cuda.is_available`) and skips a couple of
   real-GPU-memory checks when no CUDA GPU is present.
-- Not included yet: Kubernetes, Prometheus/Grafana, vLLM,
-  cloud-provider-specific code.
+- Not included yet: Kubernetes, vLLM, cloud-provider-specific code.
 
 ## Phase 4A scope: Docker containerization
 
@@ -65,25 +65,53 @@ Phase 4A (Docker containerization).**
 - Deliberately designed so an NVIDIA/CUDA variant can be added later as an
   isolated change (new base image + CUDA torch build) rather than a
   rewrite - see "CPU vs. future GPU Docker image" below.
-- Not included yet: actually building the GPU/CUDA image, Kubernetes,
-  Prometheus/Grafana, vLLM, failure injection.
+- Not included yet: actually building the GPU/CUDA image, Kubernetes, vLLM,
+  failure injection.
+
+## Phase 4B scope: Prometheus + Grafana observability
+
+- Every request is now instrumented: a `GET /metrics` endpoint exposes
+  Prometheus-format metrics alongside the existing `/health` and
+  `/generate` (same port, no Docker/API surface change).
+- HTTP-level metrics (request counts, latency histograms) are recorded by
+  the existing `TimingMiddleware`, labeled by the route's **path template**
+  (e.g. `/generate`), not the raw request path - see "HTTP path labels"
+  below.
+- Inference-level metrics (request outcome, generation latency, prompt/
+  completion token counters, active backend/device/model, GPU memory) are
+  recorded in `/generate`, backend-agnostic - mock and Hugging Face both
+  populate the same metric names.
+- A new `docker-compose.yml` runs the existing `inference-lab` image
+  together with `prometheus` and `grafana` containers - still no
+  Kubernetes.
+- Prometheus's own scrape of `/metrics` is excluded from the Grafana
+  dashboard's traffic/error-rate panels, so polling doesn't inflate the
+  apparent request rate (see "Observability" below).
+- A Prometheus datasource and a starter Grafana dashboard are
+  pre-provisioned - no manual clicking needed after `docker compose up`.
+- Not included yet: failure injection, Kubernetes, vLLM, GPU Docker.
 
 ## Architecture
 
 ```
-Client
-  │  HTTP
-  ▼
-FastAPI app (main.py)
-  │
-  ├─ TimingMiddleware        → measures & logs latency per request
-  ├─ api/routes.py           → GET /health, POST /generate
-  │     depends only on ──▶  backends/base.py (InferenceBackend interface)
+Client                          Prometheus (container)
+  │  HTTP                          │  scrapes GET /metrics every 15s
+  ▼                                ▼
+FastAPI app (main.py) ──────────── observability/metrics.py
+  │                                    ▲  (metric objects + record_*/set_* helpers)
+  ├─ TimingMiddleware ───────────────┤  records HTTP metrics (path template labels)
+  ├─ api/routes.py                   │
+  │    GET /health, GET /metrics, POST /generate
+  │    depends only on ──▶  backends/base.py (InferenceBackend interface)
+  │    /generate also records inference metrics ─┘
   │
   ├─ backends/mock.py        → MockBackend (simulated latency + fake tokens)
   └─ backends/huggingface.py → HuggingFaceBackend (real local model via Transformers)
         │
         └─ backends/device.py → device detection, startup logging, GPU memory stats
+                                                      ▲
+                                                      │ PromQL queries
+                                              Grafana (container) → dashboards
 ```
 
 The API layer never imports a concrete backend - only the abstract
@@ -96,6 +124,13 @@ same interface, and switched on with one config value - no changes to
 routes, schemas, or middleware. `torch`/`transformers` are only imported
 when the `huggingface` backend is actually selected, so a mock-only install
 never needs them.
+
+`observability/metrics.py` defines every Prometheus metric object as a
+module-level singleton and exposes small helper functions
+(`record_http_request`, `record_generation`, `set_backend_info`,
+`set_model_load_seconds`); `TimingMiddleware`, `api/routes.py`, and
+`backends/huggingface.py` call these helpers rather than touching
+`prometheus_client` directly, keeping metric definitions in one place.
 
 ## Project layout
 
@@ -113,8 +148,10 @@ src/inference_lab/
 ├── core/
 │   ├── config.py            # env-based settings
 │   └── logging.py           # logging setup
-└── middleware/
-    └── timing.py             # per-request latency measurement
+├── middleware/
+│   └── timing.py             # per-request latency measurement + HTTP metrics
+└── observability/
+    └── metrics.py            # Prometheus metric objects + record_*/set_* helpers
 
 tests/                        # pytest suite
 scripts/
@@ -123,6 +160,14 @@ scripts/
 
 Dockerfile                    # two-stage build (builder -> runtime)
 .dockerignore                 # keeps secrets/tests/dev tooling out of the image
+docker-compose.yml            # app + Prometheus + Grafana, together
+monitoring/
+├── prometheus.yml            # scrape config
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/prometheus.yml  # auto-provisioned Prometheus datasource
+    │   └── dashboards/dashboard.yml    # tells Grafana where to load dashboards from
+    └── dashboards/inference-lab.json   # starter dashboard (traffic, latency, tokens, GPU)
 ```
 
 ## Setup
@@ -411,6 +456,123 @@ variant is a small, isolated change later, not a rewrite:
 | Run command | `docker run ...` | `docker run --gpus all ...`, requiring the NVIDIA Container Toolkit on the host |
 | App code, API, health check, `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto` device detection | Unchanged | Unchanged - Phase 3A already made the backend device-agnostic |
 
+## Observability (Prometheus + Grafana)
+
+Run the whole stack - the app, Prometheus, and Grafana together:
+
+```bash
+docker compose up --build
+```
+
+Then:
+
+- **App**: http://localhost:8000 (`/health`, `/generate`, `/metrics` - unchanged from earlier phases)
+- **Prometheus**: http://localhost:9090 (try the "Status → Targets" page - `inference-lab` should show as `UP`)
+- **Grafana**: http://localhost:3000 (login `admin` / `admin`) - the Prometheus datasource and the
+  "AI Inference Reliability Lab" dashboard are pre-provisioned; no manual setup needed.
+
+### How Prometheus and Grafana fit together
+
+Prometheus **pulls**: every 15 seconds it sends an HTTP GET to the app's
+`/metrics` and stores whatever numbers it finds as a time series. Grafana
+never talks to the app directly - it only queries Prometheus's stored
+history (via PromQL) and draws graphs from it. So: the app just reports its
+current numbers when asked; Prometheus is responsible for polling and
+remembering; Grafana is responsible for querying and drawing.
+
+### Metrics exposed at `/metrics`
+
+**HTTP layer** (every route, recorded by `TimingMiddleware`):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `http_requests_total` | Counter | `method`, `path`, `status` |
+| `http_request_duration_seconds` | Histogram | `method`, `path` |
+
+**Inference layer** (recorded in `/generate`, identical for both backends):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `inference_requests_total` | Counter | `backend`, `status` (`success`/`error`) |
+| `inference_generation_latency_seconds` | Histogram | `backend` |
+| `inference_prompt_tokens_total` / `inference_completion_tokens_total` | Counter | `backend` |
+| `inference_backend_info` | Gauge (always `1`) | `backend`, `device`, `model` |
+| `inference_model_load_seconds` | Gauge | `backend`, `model` (Hugging Face only) |
+| `inference_gpu_memory_allocated_bytes` / `_reserved_bytes` / `_peak_bytes` | Gauge | `backend` (only set on a CUDA device - absent otherwise, same "null becomes absent" pattern as the JSON API) |
+
+Plus `prometheus_client`'s default collectors (process CPU/memory, Python
+GC stats) for free.
+
+### HTTP path labels
+
+`path` on the HTTP-layer metrics is the route's **path template**
+(`request.scope["route"].path`, e.g. `/generate`), not the raw request
+URL. This is deliberate: a raw path label would let anyone create an
+unbounded number of time series just by hitting made-up URLs (`/x`, `/y`,
+`/z`, ...); the template label stays fixed to the handful of routes this
+app actually defines. Requests that don't match any route are labeled
+`unmatched` instead of leaking the arbitrary path that was requested.
+
+### Excluding Prometheus's own scrape from traffic panels
+
+Prometheus itself calls `GET /metrics` every 15 seconds, which is a real
+HTTP request and does get recorded in `http_requests_total{path="/metrics"}`
+- that's useful for noticing if scraping itself is slow or failing. But it
+is not user/API traffic, so the dashboard's "Request rate" and "Error rate"
+panels explicitly filter it out with `path!="/metrics"` in their PromQL, e.g.:
+
+```promql
+sum(rate(http_requests_total{path!="/metrics"}[5m])) by (path, status)
+```
+
+so Prometheus's own polling never inflates the apparent request rate shown
+to a viewer.
+
+### Example PromQL queries
+
+```promql
+# Generation latency p95, by backend
+histogram_quantile(0.95, sum(rate(inference_generation_latency_seconds_bucket[5m])) by (le, backend))
+
+# Live tokens/sec, by backend
+sum(rate(inference_completion_tokens_total[5m])) by (backend)
+
+# Error rate, excluding Prometheus's own scrape
+sum(rate(http_requests_total{path!="/metrics", status=~"5.."}[5m]))
+```
+
+### Verified locally
+
+The full observability setup has been checked against a real, running
+instance of this app in this development environment:
+
+- `GET /metrics` returns valid Prometheus exposition-format output
+  (confirmed both by the pytest suite and by hand with `curl`).
+- `POST /generate` still returns exactly the same response shape as
+  before Phase 4B - unchanged behavior, confirmed live.
+- The real Prometheus binary (v2.55.1) was run locally, configured to
+  scrape this app directly (not via Docker, since this sandbox's network
+  policy blocks Docker Hub - see Phase 4A), and its `/api/v1/targets` API
+  reported the target as **`"health": "up"`**.
+- Every PromQL query used by the Grafana dashboard's panels (request rate,
+  error rate, latency percentiles, token throughput, GPU memory, backend
+  info) was executed against that real Prometheus instance via its
+  `/api/v1/query` API and returned `"status": "success"`.
+- `monitoring/prometheus.yml` was validated with `promtool check config`.
+- `docker-compose.yml` was validated with `docker compose config`.
+- The dashboard JSON (`monitoring/grafana/dashboards/inference-lab.json`)
+  was validated for well-formed JSON and correct panel/target structure.
+- **Not verified live**: Grafana itself. This sandbox has no way to obtain
+  a Grafana binary or image (Docker Hub, `dl.grafana.com`, and this
+  session's general GitHub browsing are all blocked here), so the actual
+  dashboard rendering and datasource connection inside Grafana have not
+  been observed running. As a partial substitute, the exact HTTP calls
+  Grafana's Prometheus datasource makes when testing a connection
+  (`GET /api/v1/query` and `GET /api/v1/status/buildinfo`) were run
+  directly against the real Prometheus instance and both succeeded - so
+  the endpoint Grafana would connect to is confirmed healthy, even though
+  Grafana itself was not run.
+
 ## Linting
 
 ```bash
@@ -421,9 +583,10 @@ ruff check .
 
 - **Phase 3B and beyond**: Larger models, batching/concurrency benchmarks,
   and repeated runs to build on the single-run Phase 3 result above.
-- **Phase 4B**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
-  Docker image" above), running the containerized service on a cloud GPU.
-- **Later**: Add a vLLM backend, Prometheus metrics and Grafana dashboards,
-  Kubernetes deployment, GPU scheduling, deliberately induced failure
-  scenarios (latency spikes, OOM, queueing/backpressure issues, autoscaling
-  gaps) with before/after benchmarks.
+- **Phase 4C**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
+  Docker image" above), running the containerized service on a cloud GPU -
+  with Prometheus/Grafana already in place to watch it.
+- **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling,
+  deliberately induced failure scenarios (latency spikes, OOM,
+  queueing/backpressure issues, autoscaling gaps) with before/after
+  benchmarks visible directly in the Grafana dashboard built in Phase 4B.
