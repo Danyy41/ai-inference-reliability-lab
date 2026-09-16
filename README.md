@@ -5,7 +5,7 @@ performance and infrastructure failures, diagnose them with metrics, fix
 them, and benchmark the improvement.
 
 This is a portfolio project developed in stages. **This README covers
-Versions 0.1, 0.2, and Phase 3A.**
+Versions 0.1, 0.2, Phase 3A, and the first Phase 3 GPU benchmark results.**
 
 ## Version 0.1 scope
 
@@ -195,12 +195,30 @@ values. Setting `INFERENCE_LAB_HUGGINGFACE_DEVICE=cuda` explicitly forces
 CUDA and raises a clear error immediately if no CUDA GPU is actually
 available, rather than silently falling back to CPU.
 
-**Note:** this repository has been developed and tested on a CPU-only
-machine (no local NVIDIA GPU). The CUDA code path is written and unit
-tested (with `torch.cuda` calls mocked - see `tests/test_device.py`), but
-real GPU benchmarks - actually measuring generation speed and memory usage
-on an NVIDIA GPU - will be run later on a cloud GPU instance (Phase 3B and
-beyond), not in this phase.
+**Note:** this repository has been developed on a CPU-only machine (no
+local NVIDIA GPU). The CUDA code path is written and unit tested (with
+`torch.cuda` calls mocked - see `tests/test_device.py`); a real GPU
+benchmark has since been run on a cloud NVIDIA GPU - see
+[Phase 3 results](#phase-3-results) below.
+
+## Phase 3 results
+
+A real CPU-vs-GPU benchmark was run on a [RunPod](https://runpod.io) GPU
+pod (NVIDIA A40) using the base `gpt2` model, the same prompt, and the same
+100-token completion on both devices. Full details, the comparison table,
+interpretation, and limitations are in
+[`experiments/phase3_gpu_benchmark.md`](experiments/phase3_gpu_benchmark.md).
+
+| Metric | CPU | NVIDIA A40 |
+|---|---|---|
+| `latency_ms` | 15262.6069 | 1167.2952 |
+| `tokens_per_second` | 6.55196 | 85.66813 |
+| `gpu_memory_allocated_mb` | null | 484.2148 |
+
+The A40 achieved **~13.1x higher generation throughput** and **~92.4%
+lower latency** than CPU for this workload. This is a single run on a
+small (124M-parameter) model with no batching or concurrency - see the
+full report for limitations before drawing broader conclusions.
 
 ### What Phase 3 measures
 
@@ -269,8 +287,8 @@ ruff check .
 
 ## Roadmap
 
-- **Phase 3B**: Actually run this project on a cloud NVIDIA GPU and record
-  real CPU-vs-GPU benchmark numbers using the metrics added in Phase 3A.
+- **Phase 3B and beyond**: Larger models, batching/concurrency benchmarks,
+  and repeated runs to build on the single-run Phase 3 result above.
 - **Later**: Add a vLLM backend, containerize with Docker, add Prometheus
   metrics and Grafana dashboards, Kubernetes deployment, GPU scheduling,
   deliberately induced failure scenarios (latency spikes, OOM,
