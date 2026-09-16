@@ -2,6 +2,42 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 
 _BYTES_PER_MB = 1024 * 1024
 
+# Shared by both latency histograms below. Deliberately dense between 50ms
+# and 500ms - Phase 5 baseline validation showed that the previous coarser
+# buckets (a 250ms-500ms gap with zero real observations in it, since mock
+# latency tops out at 300ms) made histogram_quantile's linear interpolation
+# overshoot p95/p99 by 40-60% relative to the true client-observed values.
+# Still covers up to 120s for slower real-model generation latency.
+_LATENCY_BUCKETS_SECONDS = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.075,
+    0.1,
+    0.15,
+    0.2,
+    0.25,
+    0.3,
+    0.4,
+    0.5,
+    0.75,
+    1,
+    1.5,
+    2,
+    3,
+    5,
+    7.5,
+    10,
+    15,
+    20,
+    30,
+    45,
+    60,
+    90,
+    120,
+)
+
 HTTP_REQUESTS_TOTAL = Counter(
     "http_requests_total",
     "Total HTTP requests handled, labeled by method, route path template, and status code.",
@@ -12,7 +48,7 @@ HTTP_REQUEST_DURATION_SECONDS = Histogram(
     "http_request_duration_seconds",
     "HTTP request duration in seconds, labeled by method and route path template.",
     ["method", "path"],
-    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60),
+    buckets=_LATENCY_BUCKETS_SECONDS,
 )
 
 INFERENCE_REQUESTS_TOTAL = Counter(
@@ -25,7 +61,7 @@ INFERENCE_GENERATION_LATENCY_SECONDS = Histogram(
     "inference_generation_latency_seconds",
     "Time spent generating a completion, labeled by backend.",
     ["backend"],
-    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120),
+    buckets=_LATENCY_BUCKETS_SECONDS,
 )
 
 INFERENCE_PROMPT_TOKENS_TOTAL = Counter(

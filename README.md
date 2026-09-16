@@ -6,8 +6,8 @@ them, and benchmark the improvement.
 
 This is a portfolio project developed in stages. **This README covers
 Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results,
-Phase 4A (Docker containerization), and Phase 4B (Prometheus + Grafana
-observability).**
+Phase 4A (Docker containerization), Phase 4B (Prometheus + Grafana
+observability), and Phase 5 (the healthy-baseline load test).**
 
 ## Version 0.1 scope
 
@@ -91,6 +91,32 @@ observability).**
   pre-provisioned - no manual clicking needed after `docker compose up`.
 - Not included yet: failure injection, Kubernetes, vLLM, GPU Docker.
 
+## Phase 5 scope: healthy baseline
+
+- Establishes the reference measurement every later failure-injection
+  experiment gets compared against - a load-test run with no failures
+  injected.
+- `scripts/run_experiment.sh` + `scripts/capture_prometheus_metrics.py`:
+  a reusable pair that runs a fixed workload against the Docker Compose
+  stack and pulls request throughput, latency p50/p95/p99, error rate,
+  token throughput, process CPU, process memory, and active backend
+  straight from Prometheus for the exact `[start, end]` window of that
+  run - the same pair every later experiment reuses unchanged.
+- `monitoring/prometheus.yml`'s scrape interval lowered from 15s to 2s, so
+  a workload lasting tens of seconds gets many real scrape samples instead
+  of one or two.
+- Fixed a real accuracy bug this validation caught: the latency
+  histogram's original bucket boundaries made `histogram_quantile`
+  overshoot p95/p99 by 40-60% for the mock backend's actual latency
+  range - see `experiments/phase5_healthy_baseline.md` for the full
+  writeup.
+- **Complete**: the real healthy mock baseline has been run against the
+  Docker Compose stack (1000 requests, concurrency 5, ~24 req/s
+  throughput, p99 ~298ms, 0% errors) - this is the canonical reference
+  every later failure-injection experiment compares against. Full numbers
+  in `experiments/phase5_healthy_baseline.md`.
+- Not included yet: failure injection, Kubernetes, vLLM, GPU Docker.
+
 ## Architecture
 
 ```
@@ -156,18 +182,24 @@ src/inference_lab/
 tests/                        # pytest suite
 scripts/
 ├── load_test.py              # async load-testing / benchmarking script
-└── docker_smoke_test.sh      # build + run + health/generate check for the Docker image
+├── docker_smoke_test.sh      # build + run + health/generate check for the Docker image
+├── run_experiment.sh         # reproducible experiment runner (baseline + future failure runs)
+└── capture_prometheus_metrics.py  # pulls the 9 experiment metrics from Prometheus
 
 Dockerfile                    # two-stage build (builder -> runtime)
 .dockerignore                 # keeps secrets/tests/dev tooling out of the image
 docker-compose.yml            # app + Prometheus + Grafana, together
 monitoring/
-├── prometheus.yml            # scrape config
+├── prometheus.yml            # scrape config (2s interval)
 └── grafana/
     ├── provisioning/
     │   ├── datasources/prometheus.yml  # auto-provisioned Prometheus datasource
     │   └── dashboards/dashboard.yml    # tells Grafana where to load dashboards from
     └── dashboards/inference-lab.json   # starter dashboard (traffic, latency, tokens, GPU)
+
+experiments/
+├── phase3_gpu_benchmark.md         # CPU vs. NVIDIA A40 benchmark
+└── phase5_healthy_baseline.md      # reference measurement for failure-injection comparisons
 ```
 
 ## Setup
@@ -346,9 +378,46 @@ python scripts/load_test.py --url http://localhost:8000 --requests 200 --concurr
 
 This reports total requests, success/failure counts, error rate, wall time,
 throughput, and latency min/mean/p50/p95/p99/max. Use `--help` to see all
-options (prompt text, max tokens, etc). This script is the tool used in
-later versions to benchmark the effect of introduced failures and their
-fixes.
+options (prompt text, max tokens, etc). This is the client-side view; for
+the authoritative, Prometheus-sourced measurement (including process
+CPU/memory and token throughput, which the client can't see at all), use
+`scripts/run_experiment.sh` below instead.
+
+## Running a reproducible experiment (baseline / failure comparisons)
+
+`scripts/run_experiment.sh` wraps `load_test.py` with the timing and
+Prometheus-capture steps needed for a real, comparable measurement. With
+the full stack up (`docker compose up --build`):
+
+```bash
+scripts/run_experiment.sh \
+  --requests 1000 --concurrency 5 \
+  --prompt "Tell me about reliability engineering." --max-tokens 64 \
+  --url http://localhost:8000 --prometheus-url http://localhost:9090 \
+  --backend mock \
+  --out experiments/phase5_healthy_baseline_metrics.json
+```
+
+It: sleeps briefly so Prometheus has a fresh at-rest scrape before
+starting; runs the load test, recording the real start/end timestamps;
+sleeps again so Prometheus scrapes the fully-settled final state; then
+calls `scripts/capture_prometheus_metrics.py` to pull request throughput,
+latency p50/p95/p99, error rate, token throughput, process CPU, process
+memory, and the active backend from Prometheus for that exact window, and
+prints (and optionally saves as JSON) the result.
+
+This is the same pair of scripts every later failure-injection experiment
+reuses - see `experiments/phase5_healthy_baseline.md` for the full
+methodology and the healthy-baseline numbers this workload produces.
+
+**Windows/WSL note:** `scripts/run_experiment.sh` must have LF (Unix) line
+endings to run under WSL - a Windows Git checkout with
+`core.autocrlf=true` can otherwise convert it to CRLF, which breaks the
+`#!/usr/bin/env bash` shebang. This repo's `.gitattributes` forces LF for
+`.sh` files (and other text files) on checkout regardless of that local
+setting, so a fresh clone is unaffected. If you already have a CRLF copy
+from before this fix, run `git add --renormalize .` (or re-clone) to pick
+it up.
 
 ## Running with Docker
 
@@ -593,7 +662,9 @@ ruff check .
 - **Phase 4C**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
   Docker image" above), running the containerized service on a cloud GPU -
   with Prometheus/Grafana already in place to watch it.
-- **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling,
-  deliberately induced failure scenarios (latency spikes, OOM,
-  queueing/backpressure issues, autoscaling gaps) with before/after
-  benchmarks visible directly in the Grafana dashboard built in Phase 4B.
+- **Phase 6+**: Deliberately induced failure scenarios (latency spikes,
+  OOM, queueing/backpressure issues, autoscaling gaps), each measured with
+  `scripts/run_experiment.sh` and compared directly against the Phase 5
+  healthy baseline - both as Markdown reports in `experiments/` and live
+  in the Grafana dashboard built in Phase 4B.
+- **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling.
