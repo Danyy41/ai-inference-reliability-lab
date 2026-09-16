@@ -1,0 +1,41 @@
+# Version control
+.git/
+.gitignore
+
+# Python virtual environments / caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets / local env files - never bake these into an image
+.env
+.env.*
+
+# Not needed to run the service
+# (README.md IS needed at build time: pyproject.toml's readme= field
+# requires it to be present when pip builds the package metadata)
+tests/
+scripts/
+experiments/
+*.md
+!README.md
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Load test output, logs
+load_test_results/
+*.log
