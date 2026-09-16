@@ -110,8 +110,11 @@ observability), and Phase 5 (the healthy-baseline load test).**
   overshoot p95/p99 by 40-60% for the mock backend's actual latency
   range - see `experiments/phase5_healthy_baseline.md` for the full
   writeup.
-- See `experiments/phase5_healthy_baseline.md` for the full methodology,
-  workload, and results.
+- **Complete**: the real healthy mock baseline has been run against the
+  Docker Compose stack (1000 requests, concurrency 5, ~24 req/s
+  throughput, p99 ~298ms, 0% errors) - this is the canonical reference
+  every later failure-injection experiment compares against. Full numbers
+  in `experiments/phase5_healthy_baseline.md`.
 - Not included yet: failure injection, Kubernetes, vLLM, GPU Docker.
 
 ## Architecture
@@ -406,6 +409,15 @@ prints (and optionally saves as JSON) the result.
 This is the same pair of scripts every later failure-injection experiment
 reuses - see `experiments/phase5_healthy_baseline.md` for the full
 methodology and the healthy-baseline numbers this workload produces.
+
+**Windows/WSL note:** `scripts/run_experiment.sh` must have LF (Unix) line
+endings to run under WSL - a Windows Git checkout with
+`core.autocrlf=true` can otherwise convert it to CRLF, which breaks the
+`#!/usr/bin/env bash` shebang. This repo's `.gitattributes` forces LF for
+`.sh` files (and other text files) on checkout regardless of that local
+setting, so a fresh clone is unaffected. If you already have a CRLF copy
+from before this fix, run `git add --renormalize .` (or re-clone) to pick
+it up.
 
 ## Running with Docker
 

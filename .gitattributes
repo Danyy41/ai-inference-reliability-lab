@@ -1,0 +1,15 @@
+# Force LF line endings on checkout, regardless of a contributor's local
+# core.autocrlf setting. Without this, Windows Git installs with
+# autocrlf=true check scripts/run_experiment.sh out with CRLF endings,
+# which breaks it under WSL/Linux (the shebang line becomes
+# "#!/usr/bin/env bash\r", an invalid interpreter path) even though the
+# file looks fine as plain text on Windows.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf

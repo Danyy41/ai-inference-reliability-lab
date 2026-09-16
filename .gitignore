@@ -8,6 +8,8 @@ dist/
 
 # Virtual environments
 .venv/
+.venv-wsl/
+.venv*/
 venv/
 env/
 

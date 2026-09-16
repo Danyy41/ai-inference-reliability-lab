@@ -7,17 +7,19 @@ the same tooling and methodology every future experiment will reuse.
 
 ## Status
 
-**Results: PENDING.** This report documents the workload, methodology, and
-tooling, all of which have been implemented and validated (see
-"Validation" below). The actual numbers have not been filled in because
-running the real workload requires the Docker Compose stack
-(`docker compose up --build`), and this development sandbox's network
-policy blocks Docker Hub (the base images can't be pulled here - the same
-limitation documented in the Phase 4A/4B sections of the main README). No
-numbers are invented in their place.
+**Complete.** This run was executed against the real Docker Compose stack
+(app + Prometheus + Grafana, `docker compose up --build`) on the repo
+owner's machine, using `scripts/run_experiment.sh` exactly as documented
+below. The numbers in "Results" are real, measured values - nothing in
+this report is invented or estimated.
 
-To produce the real results, run (from the repo root, with the Compose
-stack up):
+**This is the canonical healthy mock baseline.** Every later
+failure-injection experiment (Phase 6+) is expected to run the identical
+workload below via `scripts/run_experiment.sh` and compare its Prometheus
+numbers directly against this report's Results table. A regression is
+"this run's numbers are worse than this baseline's," not a judgment call.
+
+To reproduce it:
 
 ```bash
 docker compose up --build -d
@@ -28,8 +30,6 @@ scripts/run_experiment.sh \
   --backend mock \
   --out experiments/phase5_healthy_baseline_metrics.json
 ```
-
-and paste the script's printed report into the "Results" section below.
 
 ## Workload
 
@@ -126,30 +126,84 @@ of catching an actual peak rather than one arbitrary point.
 
 ## Results
 
-*(Pending a real run against the Docker Compose stack - see "Status" above.)*
+### Prometheus (authoritative)
+
+These are the canonical baseline numbers - captured server-side, from the
+app's own `/metrics`, via `scripts/capture_prometheus_metrics.py`, for the
+exact `[start, end]` window of the run described above. Raw JSON:
+[`phase5_healthy_baseline_metrics.json`](phase5_healthy_baseline_metrics.json)
+(reconstructed at the precision the script's own printed report uses -
+2-4 decimal places per field, exactly as shown below; the machine that ran
+the experiment holds the original file with full floating-point
+precision, if that's ever needed).
 
 | Metric | Value |
 |---|---|
-| Request throughput | — |
-| p50 latency | — |
-| p95 latency | — |
-| p99 latency | — |
-| Error rate | — |
-| Token throughput | — |
-| Process CPU (avg) | — |
-| Process memory (max) | — |
-| Process memory (avg) | — |
-| Active backend | — |
+| Window | 42.15 s |
+| Total requests | 1000 |
+| Total errors | 0 |
+| Request throughput | 23.726 req/s |
+| Error rate | 0.00% |
+| Latency p50 | 181.54 ms |
+| Latency p95 | 289.24 ms |
+| Latency p99 | 298.03 ms |
+| Total completion tokens | 5000 |
+| Token throughput | 118.628 tok/s |
+| Process CPU (avg) | 0.0403 cores |
+| Process memory (max) | 55.74 MB |
+| Process memory (avg) | 55.54 MB |
+| Active backend | `backend=mock device=n/a model=n/a` |
 
-## Validation
+### Client-side cross-check (secondary, not authoritative)
 
-The scripts and config were validated in this development sandbox using a
-non-Docker substitute (the same pattern used for Phase 4A/4B, since Docker
-Hub is blocked here): the app run directly via `uvicorn`, and a real
+`load_test.py`'s own view of the same run, printed to stdout during step 2
+of `run_experiment.sh`. This is **not** the source of truth - it can't see
+process CPU, memory, or token counts at all, and its latency is measured
+end-to-end from the client (network + HTTP overhead included), not the
+server's own generation time. It exists only as a sanity check that the
+two independent measurements roughly agree.
+
+| Metric | Value |
+|---|---|
+| Wall time | 40.61 s |
+| Error rate | 0.00% |
+| Throughput | 24.63 req/s |
+| Latency mean | 198.65 ms |
+| Latency p50 | 200.70 ms |
+| Latency p95 | 308.70 ms |
+| Latency p99 | 327.16 ms |
+| Latency max | 368.19 ms |
+
+### Reading the two side by side
+
+The client-side numbers run consistently a bit higher than Prometheus's -
+expected, since the client's latency includes the full HTTP round trip
+(network, ASGI, `TimingMiddleware`) on top of the server-recorded
+generation time alone, and its throughput is computed over `load_test.py`'s
+own wall-clock window rather than the settle-buffered `[start, end]` window
+Prometheus was queried over. The two datasets agreeing this closely (p50
+within ~20ms, p95 within ~20ms, p99 within ~30ms, throughput within ~1
+req/s) is itself a useful confirmation that both measurement paths are
+sound - a real discrepancy between them (not just this small, expected
+gap) would be worth investigating in its own right in a future experiment.
+
+This real run's Prometheus numbers also land close to the non-Docker
+substitute validation described below (p95 289.24ms here vs. ~287ms in the
+substitute run, p99 298.03ms vs. ~298ms) - reassuring evidence that the
+substitute validation was a reasonable proxy for the real containerized
+stack.
+
+## Tooling validation (before the real run above)
+
+Before the real Docker Compose run, the scripts and config were validated
+in the development sandbox that built this phase, using a non-Docker
+substitute (the same pattern used for Phase 4A/4B, since Docker Hub is
+blocked in that sandbox): the app run directly via `uvicorn`, and a real
 Prometheus v2.55.1 binary (fetched from GitHub releases, not Docker Hub)
-run against it with the same 2s scrape interval. This is **not** a
-Docker-Compose run and its numbers are not reported as the baseline above
-- it exists only to prove the tooling itself is correct.
+run against it with the same 2s scrape interval. This was **not** a
+Docker-Compose run and its numbers were never reported as the baseline -
+it existed only to prove the tooling itself was correct before asking for
+a real run.
 
 - `scripts/run_experiment.sh` ran the full 1000-request/concurrency-5
   workload end-to-end against this substitute setup without error.
