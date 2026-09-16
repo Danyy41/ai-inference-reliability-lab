@@ -1,6 +1,9 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  # 2s (not the default 15s) so short experiment bursts (Phase 5+) get
+  # multiple real scrape samples instead of at most one or two - see
+  # experiments/phase5_healthy_baseline.md for why this matters.
+  scrape_interval: 2s
+  evaluation_interval: 2s
 
 scrape_configs:
   - job_name: inference-lab
