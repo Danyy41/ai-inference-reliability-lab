@@ -1,0 +1,163 @@
+{
+  "id": null,
+  "uid": "inference-lab",
+  "title": "AI Inference Reliability Lab",
+  "description": "Request traffic, error rate, generation latency, token throughput, and GPU memory for the inference-lab service.",
+  "tags": ["inference-lab"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate (excludes /metrics scrapes)",
+      "description": "Requests per second by route and status code. /metrics is excluded so Prometheus's own scrape polling does not inflate the apparent API traffic rate.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(http_requests_total{path!=\"/metrics\"}[5m])) by (path, status)",
+          "legendFormat": "{{path}} [{{status}}]"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error rate (excludes /metrics scrapes)",
+      "description": "5xx responses per second, excluding /metrics.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(http_requests_total{path!=\"/metrics\", status=~\"5..\"}[5m])) by (path)",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Generation latency (p50 / p95 / p99)",
+      "description": "POST /generate latency percentiles by backend.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(inference_generation_latency_seconds_bucket[5m])) by (le, backend))",
+          "legendFormat": "p50 {{backend}}"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(inference_generation_latency_seconds_bucket[5m])) by (le, backend))",
+          "legendFormat": "p95 {{backend}}"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(inference_generation_latency_seconds_bucket[5m])) by (le, backend))",
+          "legendFormat": "p99 {{backend}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Token throughput",
+      "description": "Completion tokens generated per second, by backend.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(inference_completion_tokens_total[5m])) by (backend)",
+          "legendFormat": "{{backend}} tokens/s"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "GPU memory",
+      "description": "GPU memory allocated/reserved/peak for the most recent generation call. Stays at 0 on CPU (no GPU to measure) - see Phase 3A/4A.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "inference_gpu_memory_allocated_bytes",
+          "legendFormat": "allocated {{backend}}"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "inference_gpu_memory_reserved_bytes",
+          "legendFormat": "reserved {{backend}}"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "inference_gpu_memory_peak_bytes",
+          "legendFormat": "peak {{backend}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Active backend",
+      "description": "Which backend/device/model this instance is running (inference_backend_info, value always 1).",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "inference_backend_info",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    }
+  ]
+}

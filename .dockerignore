@@ -31,6 +31,11 @@ experiments/
 *.md
 !README.md
 
+# Orchestration/monitoring - read by separate Prometheus/Grafana containers
+# via docker-compose volume mounts, not baked into the app image
+docker-compose.yml
+monitoring/
+
 # IDE / OS
 .vscode/
 .idea/
