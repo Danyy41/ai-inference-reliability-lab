@@ -5,7 +5,8 @@ performance and infrastructure failures, diagnose them with metrics, fix
 them, and benchmark the improvement.
 
 This is a portfolio project developed in stages. **This README covers
-Versions 0.1, 0.2, Phase 3A, and the first Phase 3 GPU benchmark results.**
+Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results, and
+Phase 4A (Docker containerization).**
 
 ## Version 0.1 scope
 
@@ -26,7 +27,7 @@ Versions 0.1, 0.2, Phase 3A, and the first Phase 3 GPU benchmark results.**
   measured generation latency
 - Tests for the new backend that only need a tiny (~3MB) model, not a
   multi-GB download
-- Not included yet (planned for later versions): vLLM, Docker, Kubernetes,
+- Not included yet (planned for later versions): vLLM, Kubernetes,
   Prometheus/Grafana, GPU infrastructure, load balancing/scaling failures.
 
 ## Phase 3A scope: NVIDIA GPU awareness and performance metrics
@@ -44,8 +45,28 @@ Versions 0.1, 0.2, Phase 3A, and the first Phase 3 GPU benchmark results.**
 - New `tests/test_device.py` exercises the device-detection logic on any
   machine (via mocking `torch.cuda.is_available`) and skips a couple of
   real-GPU-memory checks when no CUDA GPU is present.
-- Not included yet: actually running on a cloud GPU (Phase 3B), Docker,
-  Kubernetes, Prometheus/Grafana, vLLM, cloud-provider-specific code.
+- Not included yet: Kubernetes, Prometheus/Grafana, vLLM,
+  cloud-provider-specific code.
+
+## Phase 4A scope: Docker containerization
+
+- A two-stage `Dockerfile` that packages the existing FastAPI service
+  unchanged - no API, schema, or backend behavior changes.
+- Both the mock backend and the Hugging Face **CPU** backend work inside
+  the container; which one runs is still chosen entirely by the
+  `INFERENCE_LAB_BACKEND` environment variable at `docker run` time, exactly
+  as it is outside Docker.
+- A container `HEALTHCHECK` against `GET /health`.
+- Model weights and the Hugging Face cache are never baked into the image;
+  `.env` files and other secrets are excluded via `.dockerignore`.
+- `scripts/docker_smoke_test.sh` builds the image, runs it, waits for the
+  health check, and hits `/health` and `/generate` to prove the container
+  actually works.
+- Deliberately designed so an NVIDIA/CUDA variant can be added later as an
+  isolated change (new base image + CUDA torch build) rather than a
+  rewrite - see "CPU vs. future GPU Docker image" below.
+- Not included yet: actually building the GPU/CUDA image, Kubernetes,
+  Prometheus/Grafana, vLLM, failure injection.
 
 ## Architecture
 
@@ -96,7 +117,12 @@ src/inference_lab/
     └── timing.py             # per-request latency measurement
 
 tests/                        # pytest suite
-scripts/load_test.py          # async load-testing / benchmarking script
+scripts/
+├── load_test.py              # async load-testing / benchmarking script
+└── docker_smoke_test.sh      # build + run + health/generate check for the Docker image
+
+Dockerfile                    # two-stage build (builder -> runtime)
+.dockerignore                 # keeps secrets/tests/dev tooling out of the image
 ```
 
 ## Setup
@@ -279,6 +305,112 @@ options (prompt text, max tokens, etc). This script is the tool used in
 later versions to benchmark the effect of introduced failures and their
 fixes.
 
+## Running with Docker
+
+Build the image:
+
+```bash
+docker build -t inference-lab .
+```
+
+The build installs PyTorch explicitly from
+[PyTorch's CPU-only wheel index](https://download.pytorch.org/whl/cpu)
+before installing the rest of the dependencies. This matters: the default
+PyPI `torch` wheel for Linux pulls in several **gigabytes** of NVIDIA CUDA
+packages (`nvidia-cudnn-*`, `nvidia-cufft-*`, `nvidia-nccl-*`, a whole
+`cuda-toolkit` meta-package, etc.) as ordinary dependencies, even though
+this CPU image has no GPU to use them with - that was making the build
+huge and extremely slow. The explicit CPU-only install avoids all of it.
+
+Run it in **mock mode** (default, no model download):
+
+```bash
+docker run --rm -p 8000:8000 -e INFERENCE_LAB_BACKEND=mock inference-lab
+```
+
+Run it with the **Hugging Face CPU backend**, persisting the downloaded
+model across container restarts with a named volume:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e INFERENCE_LAB_BACKEND=huggingface \
+  -e INFERENCE_LAB_HUGGINGFACE_MODEL_NAME=sshleifer/tiny-gpt2 \
+  -v hf-cache:/home/appuser/.cache/huggingface \
+  inference-lab
+```
+
+Any `INFERENCE_LAB_*` variable (see the Configuration table above) can be
+passed with `-e`, exactly as when running without Docker - the image bakes
+in no backend choice, model, or device. Note that this CPU image's torch
+build has no CUDA support at all (see above), so `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto`
+will always resolve to `cpu` here regardless of `--gpus all` - a future
+CUDA image (see below) is what will make `auto` resolve to `cuda`.
+
+Either way:
+
+```bash
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Tell me about reliability engineering.", "max_tokens": 32}'
+```
+
+The container also runs a `HEALTHCHECK` against `/health` every 30 seconds;
+`docker ps` shows the container's health status, and `docker inspect
+--format='{{.State.Health.Status}}' <container>` reports it directly.
+
+### Docker smoke test
+
+`scripts/docker_smoke_test.sh` builds the image, starts it, waits for the
+health check to report healthy, then calls `/health` and `/generate` and
+fails loudly if either doesn't respond correctly:
+
+```bash
+scripts/docker_smoke_test.sh              # mock backend (fast, no network needed)
+scripts/docker_smoke_test.sh huggingface  # Hugging Face CPU backend (downloads a model)
+```
+
+### Verified locally
+
+Phase 4A's Docker setup (including the CPU-only PyTorch fix above) has been
+built and run end-to-end outside this repo's development sandbox, with all
+of the following confirmed:
+
+- The CPU-only image builds successfully, with no large NVIDIA/CUDA
+  dependency downloads.
+- The container starts successfully.
+- The Docker `HEALTHCHECK` reaches `GET /health` and gets `200 OK`.
+- `POST /generate` works from outside the container.
+- The mock backend returns the expected response, including the
+  `tokens_per_second` and `gpu_memory_*` performance fields.
+- `scripts/docker_smoke_test.sh` passes.
+
+### What's kept out of the image
+
+- **Model weights and the Hugging Face cache** - downloaded at runtime into
+  `$HF_HOME` (`/home/appuser/.cache/huggingface`) inside the container, not
+  baked into any layer. Mount that path as a volume (as above) to avoid
+  re-downloading on every container restart.
+- **Secrets and local env files** - `.dockerignore` excludes `.env`/`.env.*`
+  and everything not needed to run the service (tests, dev scripts, the
+  benchmark report, this README's own source file is copied in only
+  because `pyproject.toml` needs it to read package metadata at build
+  time).
+- **Dev/test tooling** - `pytest`, `ruff`, and the `dev` extra are never
+  installed in the image; only production + the `huggingface` extra are.
+
+### CPU vs. future GPU Docker image
+
+This image and its `Dockerfile` are deliberately structured so a CUDA
+variant is a small, isolated change later, not a rewrite:
+
+| | CPU image (this phase) | GPU image (later) |
+|---|---|---|
+| Base image | `python:3.11-slim` | An NVIDIA CUDA base image (e.g. `nvidia/cuda:12.x-runtime-ubuntu22.04` with Python added) |
+| `torch` build | CPU-only wheel, installed explicitly from `download.pytorch.org/whl/cpu` - no NVIDIA/CUDA packages at all | CUDA-enabled wheel installed from a CUDA-specific index, matching the base image's CUDA version |
+| Run command | `docker run ...` | `docker run --gpus all ...`, requiring the NVIDIA Container Toolkit on the host |
+| App code, API, health check, `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto` device detection | Unchanged | Unchanged - Phase 3A already made the backend device-agnostic |
+
 ## Linting
 
 ```bash
@@ -289,8 +421,9 @@ ruff check .
 
 - **Phase 3B and beyond**: Larger models, batching/concurrency benchmarks,
   and repeated runs to build on the single-run Phase 3 result above.
-- **Later**: Add a vLLM backend, containerize with Docker, add Prometheus
-  metrics and Grafana dashboards, Kubernetes deployment, GPU scheduling,
-  deliberately induced failure scenarios (latency spikes, OOM,
-  queueing/backpressure issues, autoscaling gaps) with before/after
-  benchmarks.
+- **Phase 4B**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
+  Docker image" above), running the containerized service on a cloud GPU.
+- **Later**: Add a vLLM backend, Prometheus metrics and Grafana dashboards,
+  Kubernetes deployment, GPU scheduling, deliberately induced failure
+  scenarios (latency spikes, OOM, queueing/backpressure issues, autoscaling
+  gaps) with before/after benchmarks.
