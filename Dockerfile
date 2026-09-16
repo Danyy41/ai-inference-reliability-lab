@@ -4,9 +4,10 @@
 # except that venv and the source tree is copied into the runtime stage, so
 # build tools and pip's cache never end up in the final image.
 #
-# To add NVIDIA GPU support later: this stage stays the same except the
-# torch wheel installed here becomes a CUDA-enabled build; only the runtime
-# stage's base image needs to change (see below).
+# This is the CPU image. A future CUDA image is a *separate* Dockerfile/
+# stage, not a variant of this one: it would use an NVIDIA CUDA base image
+# for the runtime stage and install a CUDA-enabled torch build instead of
+# the CPU-only one below - nothing here is conditional on that happening.
 FROM python:3.11-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
@@ -20,16 +21,29 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml README.md ./
 COPY src ./src
 
+# Install CPU-only PyTorch explicitly, from PyTorch's own CPU wheel index,
+# BEFORE installing the "huggingface" extra below. This matters: the
+# default PyPI "torch" wheel for Linux pulls in several GB of NVIDIA CUDA
+# packages (nvidia-cudnn-*, nvidia-cufft-*, nvidia-nccl-*, a whole
+# "cuda-toolkit" meta-package, etc.) as ordinary pip dependencies, even on a
+# machine with no GPU and even though this image never uses them - that is
+# what caused the huge, slow build. This CPU wheel has no such dependencies.
+# The "huggingface" extra below also declares torch>=2.2; since the CPU
+# build installed here already satisfies that, pip leaves it alone instead
+# of pulling the GPU wheel a second time.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 RUN pip install --no-cache-dir ".[huggingface]"
 
 # --- runtime -----------------------------------------------------------------
 # Minimal final image: just the built venv, the app source, and a non-root
 # user. No compilers, no pip cache, no dev/test dependencies.
 #
-# GPU variant later: swap this FROM line for an NVIDIA CUDA base image (e.g.
-# nvidia/cuda:12.x-runtime-ubuntu22.04 with Python installed), keep
-# everything else in this stage unchanged, and run with `docker run --gpus
-# all` on a host with the NVIDIA Container Toolkit installed.
+# A future CUDA image's runtime stage would swap this FROM line for an
+# NVIDIA CUDA base image (e.g. nvidia/cuda:12.x-runtime-ubuntu22.04 with
+# Python installed) and run with `docker run --gpus all` on a host with the
+# NVIDIA Container Toolkit installed - kept as a separate Dockerfile/stage,
+# not built yet.
 FROM python:3.11-slim AS runtime
 
 RUN groupadd --system appuser && useradd --system --gid appuser --create-home appuser

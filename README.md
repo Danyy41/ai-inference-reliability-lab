@@ -313,6 +313,15 @@ Build the image:
 docker build -t inference-lab .
 ```
 
+The build installs PyTorch explicitly from
+[PyTorch's CPU-only wheel index](https://download.pytorch.org/whl/cpu)
+before installing the rest of the dependencies. This matters: the default
+PyPI `torch` wheel for Linux pulls in several **gigabytes** of NVIDIA CUDA
+packages (`nvidia-cudnn-*`, `nvidia-cufft-*`, `nvidia-nccl-*`, a whole
+`cuda-toolkit` meta-package, etc.) as ordinary dependencies, even though
+this CPU image has no GPU to use them with - that was making the build
+huge and extremely slow. The explicit CPU-only install avoids all of it.
+
 Run it in **mock mode** (default, no model download):
 
 ```bash
@@ -332,10 +341,10 @@ docker run --rm -p 8000:8000 \
 
 Any `INFERENCE_LAB_*` variable (see the Configuration table above) can be
 passed with `-e`, exactly as when running without Docker - the image bakes
-in no backend choice, model, or device. `INFERENCE_LAB_HUGGINGFACE_DEVICE`
-still defaults to `auto`, so this same image also picks up CUDA if it's
-ever run with `--gpus all` on a CUDA-capable host and a CUDA-enabled torch
-build (not set up yet - see below).
+in no backend choice, model, or device. Note that this CPU image's torch
+build has no CUDA support at all (see above), so `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto`
+will always resolve to `cpu` here regardless of `--gpus all` - a future
+CUDA image (see below) is what will make `auto` resolve to `cuda`.
 
 Either way:
 
@@ -383,7 +392,7 @@ variant is a small, isolated change later, not a rewrite:
 | | CPU image (this phase) | GPU image (later) |
 |---|---|---|
 | Base image | `python:3.11-slim` | An NVIDIA CUDA base image (e.g. `nvidia/cuda:12.x-runtime-ubuntu22.04` with Python added) |
-| `torch` build | CPU-only wheel | CUDA-enabled wheel matching the base image's CUDA version |
+| `torch` build | CPU-only wheel, installed explicitly from `download.pytorch.org/whl/cpu` - no NVIDIA/CUDA packages at all | CUDA-enabled wheel installed from a CUDA-specific index, matching the base image's CUDA version |
 | Run command | `docker run ...` | `docker run --gpus all ...`, requiring the NVIDIA Container Toolkit on the host |
 | App code, API, health check, `INFERENCE_LAB_HUGGINGFACE_DEVICE=auto` device detection | Unchanged | Unchanged - Phase 3A already made the backend device-agnostic |
 
