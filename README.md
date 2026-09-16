@@ -370,6 +370,21 @@ scripts/docker_smoke_test.sh              # mock backend (fast, no network neede
 scripts/docker_smoke_test.sh huggingface  # Hugging Face CPU backend (downloads a model)
 ```
 
+### Verified locally
+
+Phase 4A's Docker setup (including the CPU-only PyTorch fix above) has been
+built and run end-to-end outside this repo's development sandbox, with all
+of the following confirmed:
+
+- The CPU-only image builds successfully, with no large NVIDIA/CUDA
+  dependency downloads.
+- The container starts successfully.
+- The Docker `HEALTHCHECK` reaches `GET /health` and gets `200 OK`.
+- `POST /generate` works from outside the container.
+- The mock backend returns the expected response, including the
+  `tokens_per_second` and `gpu_memory_*` performance fields.
+- `scripts/docker_smoke_test.sh` passes.
+
 ### What's kept out of the image
 
 - **Model weights and the Hugging Face cache** - downloaded at runtime into
