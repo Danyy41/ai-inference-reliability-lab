@@ -543,35 +543,42 @@ sum(rate(http_requests_total{path!="/metrics", status=~"5.."}[5m]))
 
 ### Verified locally
 
-The full observability setup has been checked against a real, running
-instance of this app in this development environment:
+The full observability setup - app, Prometheus, and Grafana together via
+`docker compose up --build` - has been confirmed working outside this
+repo's development sandbox:
 
-- `GET /metrics` returns valid Prometheus exposition-format output
-  (confirmed both by the pytest suite and by hand with `curl`).
-- `POST /generate` still returns exactly the same response shape as
-  before Phase 4B - unchanged behavior, confirmed live.
-- The real Prometheus binary (v2.55.1) was run locally, configured to
-  scrape this app directly (not via Docker, since this sandbox's network
-  policy blocks Docker Hub - see Phase 4A), and its `/api/v1/targets` API
-  reported the target as **`"health": "up"`**.
-- Every PromQL query used by the Grafana dashboard's panels (request rate,
-  error rate, latency percentiles, token throughput, GPU memory, backend
-  info) was executed against that real Prometheus instance via its
-  `/api/v1/query` API and returned `"status": "success"`.
+- `GET /metrics` works and returns valid Prometheus exposition-format
+  output.
+- Prometheus successfully scrapes the inference service.
+- Grafana runs and the pre-provisioned dashboard loads with no manual
+  setup.
+- `/generate` traffic appears in the request-rate panel.
+- Generation latency series are present.
+- Token-throughput series are present.
+- The "Active backend" panel correctly shows `mock`.
+- The error-rate panel correctly shows no data, since no errors were
+  generated.
+- The GPU-memory panel correctly shows no data, as expected in mock/CPU
+  mode (see Phase 3A/4A - these gauges are only populated on a CUDA
+  device).
+
+This was additionally checked in this repo's own development sandbox,
+where Docker Hub is blocked but a few individual pieces could still be
+verified directly:
+
+- `POST /generate` returns exactly the same response shape as before
+  Phase 4B - unchanged behavior, confirmed live.
+- The real Prometheus binary (v2.55.1, fetched directly from GitHub
+  releases since Docker Hub is blocked here) was run locally against this
+  app, and its `/api/v1/targets` API reported the target as
+  **`"health": "up"`**.
+- Every PromQL query used by the dashboard's panels was executed against
+  that real Prometheus instance via its `/api/v1/query` API and returned
+  `"status": "success"`.
 - `monitoring/prometheus.yml` was validated with `promtool check config`.
 - `docker-compose.yml` was validated with `docker compose config`.
-- The dashboard JSON (`monitoring/grafana/dashboards/inference-lab.json`)
-  was validated for well-formed JSON and correct panel/target structure.
-- **Not verified live**: Grafana itself. This sandbox has no way to obtain
-  a Grafana binary or image (Docker Hub, `dl.grafana.com`, and this
-  session's general GitHub browsing are all blocked here), so the actual
-  dashboard rendering and datasource connection inside Grafana have not
-  been observed running. As a partial substitute, the exact HTTP calls
-  Grafana's Prometheus datasource makes when testing a connection
-  (`GET /api/v1/query` and `GET /api/v1/status/buildinfo`) were run
-  directly against the real Prometheus instance and both succeeded - so
-  the endpoint Grafana would connect to is confirmed healthy, even though
-  Grafana itself was not run.
+- The dashboard JSON was validated for well-formed JSON and correct
+  panel/target structure.
 
 ## Linting
 
