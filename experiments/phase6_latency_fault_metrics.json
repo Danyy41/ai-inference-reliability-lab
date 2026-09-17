@@ -1,0 +1,18 @@
+{
+  "window_seconds": 145.19,
+  "total_requests": 1000,
+  "total_errors": 0,
+  "request_throughput_rps": 6.888,
+  "error_rate": 0.0,
+  "p50_latency_ms": 653.75,
+  "p95_latency_ms": 933.15,
+  "p99_latency_ms": 986.63,
+  "total_completion_tokens": 5000,
+  "token_throughput_tps": 34.438,
+  "process_cpu_avg_cores": 0.0183,
+  "process_memory_max_bytes": 59045314.56,
+  "process_memory_avg_bytes": 58762199.04,
+  "active_backend": "mock",
+  "active_device": "n/a",
+  "active_model": "n/a"
+}

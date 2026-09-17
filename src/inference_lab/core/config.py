@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     mock_min_latency_ms: int = 50
     mock_max_latency_ms: int = 300
+    # Deliberate fault-injection knob (Phase 6): added on top of the normal
+    # random mock latency. Default 0 means healthy behavior is byte-for-byte
+    # unchanged when this is unset - see experiments/phase6_latency_fault.md.
+    mock_extra_latency_ms: int = Field(default=0, ge=0)
 
     huggingface_model_name: str = "sshleifer/tiny-gpt2"
     huggingface_device: str = "auto"  # "auto" | "cpu" | "cuda"
