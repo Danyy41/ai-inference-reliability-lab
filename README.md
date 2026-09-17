@@ -136,8 +136,13 @@ observability), Phase 5 (the healthy-baseline load test), and Phase 6
   environment variable at `docker compose up` time, never a file edit -
   see "Failure injection" below for the exact commands (Linux/macOS and
   Windows PowerShell).
-- See `experiments/phase6_latency_fault.md` for the fault's expected
-  diagnostic signature and the real results once run.
+- **Complete**: the real 500ms fault has been run against the Docker
+  Compose stack (throughput 23.7 → 6.9 req/s, p99 298ms → 987ms, 0%
+  errors, CPU usage *dropped* rather than rising - confirming this is a
+  pure latency fault, not a CPU-pressure one). Full comparison against
+  the Phase 5 baseline, plus a genuine finding about histogram bucket
+  resolution at higher latencies, in
+  `experiments/phase6_latency_fault.md`.
 - Not included yet: any fix for this fault (that's Phase 7), other
   failure types (random failures, memory/CPU pressure), Kubernetes,
   vLLM, GPU Docker.
@@ -223,9 +228,11 @@ monitoring/
     └── dashboards/inference-lab.json   # starter dashboard (traffic, latency, tokens, GPU)
 
 experiments/
-├── phase3_gpu_benchmark.md         # CPU vs. NVIDIA A40 benchmark
-├── phase5_healthy_baseline.md      # reference measurement for failure-injection comparisons
-└── phase6_latency_fault.md         # controlled extra-latency fault vs. the Phase 5 baseline
+├── phase3_gpu_benchmark.md            # CPU vs. NVIDIA A40 benchmark
+├── phase5_healthy_baseline.md         # reference measurement for failure-injection comparisons
+├── phase5_healthy_baseline_metrics.json
+├── phase6_latency_fault.md            # controlled extra-latency fault vs. the Phase 5 baseline
+└── phase6_latency_fault_metrics.json
 ```
 
 ## Setup
@@ -743,9 +750,9 @@ ruff check .
 - **Phase 4C**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
   Docker image" above), running the containerized service on a cloud GPU -
   with Prometheus/Grafana already in place to watch it.
-- **Phase 6**: Controlled latency fault injection (this phase) - one fixed
-  extra-delay fault, measured against the Phase 5 baseline. Real numbers
-  pending a Docker Compose run.
+- **Phase 6**: Controlled latency fault injection - complete. Real
+  numbers measured and compared against the Phase 5 baseline in
+  `experiments/phase6_latency_fault.md`.
 - **Phase 7+**: A fix for the Phase 6 fault, plus further deliberately
   induced failure scenarios (OOM, queueing/backpressure issues,
   autoscaling gaps), each measured with `scripts/run_experiment.sh` and
