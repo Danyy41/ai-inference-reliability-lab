@@ -30,6 +30,16 @@ async def test_metrics_endpoint_returns_prometheus_format(client):
     assert "inference_requests_total" in samples
     assert "inference_generation_latency_seconds_bucket" in samples
     assert "inference_backend_info" in samples
+    assert "inference_requests_in_flight" in samples
+    assert "inference_generations_active" in samples
+
+
+async def test_in_flight_and_active_gauges_settle_to_zero_after_a_request(client):
+    await client.post("/generate", json={"prompt": "gauge settle test", "max_tokens": 8})
+
+    samples = _parse((await client.get("/metrics")).text)
+    assert samples["inference_requests_in_flight"][0].value == 0
+    assert samples["inference_generations_active"][0].value == 0
 
 
 async def test_backend_info_reported_at_startup(client):

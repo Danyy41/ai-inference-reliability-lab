@@ -179,6 +179,48 @@ resolution fix).**
 - Not included yet: any additional failure type, Kubernetes, vLLM, GPU
   Docker, autoscaling.
 
+## Phase 8 scope: overload / backpressure experiment
+
+- Two controlled parts, same fixed-duration concurrency sweep (5, 10, 25,
+  50, 100 concurrency, 30 seconds each): **8A** against the unmodified
+  service (no server-side limit) to see whether the async mock backend
+  saturates on its own; **8B** with a deliberate, reversible
+  `INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS=10` limit to see whether a real
+  execution-slot ceiling produces genuine queueing.
+- The limit is implemented as an `asyncio.Semaphore` gating only
+  `backend.generate()` - never added latency - so any queueing it produces
+  is a genuine capacity effect, not a simulated one. Default `0` means
+  unlimited; behavior is byte-for-byte unchanged from pre-Phase-8 unless
+  explicitly overridden.
+- Two new label-free gauges, `inference_requests_in_flight` (queued +
+  executing) and `inference_generations_active` (executing only), make the
+  queue depth directly observable; the gap between the existing HTTP and
+  generation latency histograms (once the generation timer was moved to
+  start only after the concurrency slot is acquired) serves as an
+  approximate queue-wait signal - no new histogram was needed.
+- `scripts/load_test.py` gained a fixed-duration mode
+  (`--duration-seconds`, mutually exclusive with `--requests`) since a
+  fixed request count could finish in a few seconds at high concurrency
+  against an unbounded async backend - too short to sample peak behavior.
+  Every historical Phase 5-7 command is unaffected.
+- **Complete**: the real Docker Compose comparison (concurrency 100, 30s,
+  run from inside the container to avoid a WSL/Docker-Desktop transport
+  bottleneck - see the report) proved the gauge mechanism directly:
+  `inference_requests_in_flight` peaked at 100 while
+  `inference_generations_active` peaked at exactly 10, the semaphore limit
+  - ~90 requests measurably queued. It also surfaced a genuine finding
+  beyond the original prediction: unlimited mode's own tail latency at
+  concurrency 100 (p99 5273ms) was *worse* than the limit=10 mode's p99
+  (1998ms), despite roughly half the throughput - unbounded concurrency
+  has a real cost even against a non-blocking mock backend once
+  per-request overhead compounds at high concurrency, and admission
+  control traded throughput for a dramatically more predictable tail.
+  Full analysis in `experiments/phase8_concurrency_overload.md`.
+- Not included yet: any additional failure type, Kubernetes, vLLM, GPU
+  Docker, autoscaling, CPU/resource limits (deliberately excluded - the
+  mock backend's non-blocking `asyncio.sleep` means a CPU limit wouldn't
+  create a representative inference-capacity bottleneck).
+
 ## Architecture
 
 ```
@@ -243,10 +285,10 @@ src/inference_lab/
 
 tests/                        # pytest suite
 scripts/
-├── load_test.py              # async load-testing / benchmarking script
+├── load_test.py              # async load-testing / benchmarking script (fixed-count or fixed-duration)
 ├── docker_smoke_test.sh      # build + run + health/generate check for the Docker image
 ├── run_experiment.sh         # reproducible experiment runner (baseline + future failure runs)
-└── capture_prometheus_metrics.py  # pulls the 9 experiment metrics from Prometheus
+└── capture_prometheus_metrics.py  # pulls the experiment metrics from Prometheus
 
 Dockerfile                    # two-stage build (builder -> runtime)
 .dockerignore                 # keeps secrets/tests/dev tooling out of the image
@@ -265,7 +307,10 @@ experiments/
 ├── phase5_healthy_baseline_metrics.json
 ├── phase6_latency_fault.md            # controlled extra-latency fault vs. the Phase 5 baseline
 ├── phase6_latency_fault_metrics.json
-└── phase7_histogram_fix.md            # diagnosis + fix for Phase 6's p95/p99 measurement distortion
+├── phase7_histogram_fix.md            # diagnosis + fix for Phase 6's p95/p99 measurement distortion
+├── phase8_concurrency_overload.md     # natural vs. controlled concurrency/backpressure comparison
+├── phase8a_concurrency_100_metrics.json
+└── phase8b_concurrency_100_metrics.json
 ```
 
 ## Setup
@@ -341,6 +386,7 @@ All settings are environment variables prefixed `INFERENCE_LAB_` (see
 | `INFERENCE_LAB_BACKEND` | `mock` | `mock` or `huggingface` |
 | `INFERENCE_LAB_LOG_LEVEL` | `INFO` | Python logging level |
 | `INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS` | `0` | Fault-injection knob (Phase 6+): fixed extra delay added to every mock request; rejects negative values - see "Failure injection" below |
+| `INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS` | `0` | Concurrency-limit knob (Phase 8+): max concurrent `backend.generate()` calls via an `asyncio.Semaphore`; `0` means unlimited, rejects negative values - see "Concurrency limit" below |
 | `INFERENCE_LAB_HUGGINGFACE_MODEL_NAME` | `sshleifer/tiny-gpt2` | Any causal-LM model on the Hugging Face Hub |
 | `INFERENCE_LAB_HUGGINGFACE_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` (see CPU vs. GPU below) |
 | `INFERENCE_LAB_HUGGINGFACE_MAX_NEW_TOKENS_CAP` | `256` | Hard ceiling on tokens generated per request |
@@ -470,8 +516,16 @@ starting; runs the load test, recording the real start/end timestamps;
 sleeps again so Prometheus scrapes the fully-settled final state; then
 calls `scripts/capture_prometheus_metrics.py` to pull request throughput,
 latency p50/p95/p99, error rate, token throughput, process CPU, process
-memory, and the active backend from Prometheus for that exact window, and
-prints (and optionally saves as JSON) the result.
+memory, the active backend, end-to-end HTTP `/generate` latency, and
+(Phase 8+) max in-flight/active-generation counts from Prometheus for that
+exact window, and prints (and optionally saves as JSON) the result.
+
+`--requests` and `--duration-seconds` are mutually exclusive load-generation
+modes: `--duration-seconds 30` runs a fixed 30-second sweep (needed at
+higher concurrency - see `experiments/phase8_concurrency_overload.md` -
+since a fixed request count can finish in a few seconds against an
+unbounded async backend, too short for Prometheus to sample peak behavior).
+Neither flag given preserves the historical 1000-request default.
 
 This is the same pair of scripts every later failure-injection experiment
 reuses - see `experiments/phase5_healthy_baseline.md` for the full
@@ -539,6 +593,51 @@ enabling, the container didn't pick up the new value (try
 
 See `experiments/phase6_latency_fault.md` for the full experiment,
 its expected diagnostic signature, and the real measured results.
+
+## Concurrency limit: controlled backpressure experiment
+
+`INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS` bounds how many
+`backend.generate()` calls can execute at once via an `asyncio.Semaphore` -
+entirely via config, no code changes needed. Default `0` (rejected if
+negative) means unlimited: no semaphore is created, and healthy behavior is
+unaffected unless you explicitly override it. `docker-compose.yml` reads it
+as `${INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS:-0}`, so the override is
+always a shell environment variable at `docker compose up` time, never a
+file edit - the same pattern as the latency fault above.
+
+**Enable the limit (Linux/macOS):**
+
+```bash
+INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS=10 docker compose up -d --build inference-lab
+```
+
+**Enable the limit (Windows PowerShell):**
+
+```powershell
+$env:INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS="10"
+docker compose up -d --build inference-lab
+```
+
+**Revert to healthy (Linux/macOS):**
+
+```bash
+unset INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS
+docker compose up -d --build inference-lab
+```
+
+**Revert to healthy (Windows PowerShell):**
+
+```powershell
+$env:INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS=$null
+docker compose up -d --build inference-lab
+```
+
+When the limit is active, `docker compose logs inference-lab` shows a
+`WARNING`-level line (`Server-side generation concurrency limit active:
+max 10 concurrent generations`) at startup.
+
+See `experiments/phase8_concurrency_overload.md` for the full experiment,
+the two new concurrency gauges, and the real measured results.
 
 ## Running with Docker
 
@@ -689,6 +788,8 @@ remembering; Grafana is responsible for querying and drawing.
 | `inference_backend_info` | Gauge (always `1`) | `backend`, `device`, `model` |
 | `inference_model_load_seconds` | Gauge | `backend`, `model` (Hugging Face only) |
 | `inference_gpu_memory_allocated_bytes` / `_reserved_bytes` / `_peak_bytes` | Gauge | `backend` (only set on a CUDA device - absent otherwise, same "null becomes absent" pattern as the JSON API) |
+| `inference_requests_in_flight` (Phase 8+) | Gauge, no labels | queued + executing `/generate` requests |
+| `inference_generations_active` (Phase 8+) | Gauge, no labels | `/generate` requests currently executing `backend.generate()` |
 
 Plus `prometheus_client`'s default collectors (process CPU/memory, Python
 GC stats) for free.
@@ -791,10 +892,14 @@ ruff check .
   +500ms fault) all confirm no regression and a ~7-9x reduction in
   p95/p99 histogram-quantile error. See
   `experiments/phase7_histogram_fix.md`.
-- **Phase 8+**: Further deliberately induced failure scenarios (OOM,
-  queueing/backpressure issues, autoscaling gaps), each measured with
-  `scripts/run_experiment.sh` and compared directly against the Phase 5
-  healthy baseline (re-measured under Phase 7's corrected buckets) - both
-  as Markdown reports in `experiments/` and live in the Grafana dashboard
-  built in Phase 4B.
+- **Phase 8**: Overload / backpressure experiment - complete. Real
+  Docker Compose comparison (concurrency 100) proved the admission-control
+  mechanism directly (100 in-flight, 10 active) and surfaced a genuine
+  tail-latency finding beyond the original prediction. See
+  `experiments/phase8_concurrency_overload.md`.
+- **Phase 9+**: Further deliberately induced failure scenarios (OOM,
+  autoscaling gaps), each measured with `scripts/run_experiment.sh` and
+  compared directly against the Phase 5 healthy baseline (re-measured
+  under Phase 7's corrected buckets) - both as Markdown reports in
+  `experiments/` and live in the Grafana dashboard built in Phase 4B.
 - **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling.

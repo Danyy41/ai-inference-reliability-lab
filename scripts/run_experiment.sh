@@ -19,9 +19,17 @@
 #     --url http://localhost:8000 --prometheus-url http://localhost:9090 \
 #     --backend mock \
 #     --out experiments/phase5_healthy_baseline_metrics.json
+#
+# --requests and --duration-seconds are mutually exclusive load-generation
+# modes (see scripts/load_test.py): --duration-seconds runs a fixed-duration
+# sweep (Phase 8+) instead of a fixed request count. Neither flag given
+# preserves the historical default (1000 requests), so every Phase 5-7
+# command above keeps working unchanged.
 set -euo pipefail
 
-REQUESTS=1000
+REQUESTS=""
+REQUESTS_EXPLICIT=0
+DURATION_SECONDS=""
 CONCURRENCY=5
 PROMPT="Tell me about reliability engineering."
 MAX_TOKENS=64
@@ -34,7 +42,8 @@ OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --requests) REQUESTS="$2"; shift 2 ;;
+    --requests) REQUESTS="$2"; REQUESTS_EXPLICIT=1; shift 2 ;;
+    --duration-seconds) DURATION_SECONDS="$2"; shift 2 ;;
     --concurrency) CONCURRENCY="$2"; shift 2 ;;
     --prompt) PROMPT="$2"; shift 2 ;;
     --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
@@ -48,6 +57,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$REQUESTS_EXPLICIT" -eq 1 && -n "$DURATION_SECONDS" ]]; then
+  echo "Error: --requests and --duration-seconds are mutually exclusive - specify only one." >&2
+  exit 1
+fi
+if [[ -z "$DURATION_SECONDS" && -z "$REQUESTS" ]]; then
+  REQUESTS=1000  # historical default, preserved when neither flag is given
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=== Pre-workload settle (${PRE_BUFFER_SECONDS}s) so Prometheus has a fresh at-rest scrape ==="
@@ -57,10 +74,16 @@ sleep "$PRE_BUFFER_SECONDS"
 # introduce up to ~1s of error into the request-throughput/CPU/token
 # calculations, which matters for a workload lasting only tens of seconds.
 START_TS=$(date +%s.%N)
-echo "=== Running load test: ${REQUESTS} requests, concurrency ${CONCURRENCY}, backend=${BACKEND} ==="
+if [[ -n "$DURATION_SECONDS" ]]; then
+  echo "=== Running load test: ${DURATION_SECONDS}s duration, concurrency ${CONCURRENCY}, backend=${BACKEND} ==="
+  LOAD_ARGS=(--duration-seconds "$DURATION_SECONDS")
+else
+  echo "=== Running load test: ${REQUESTS} requests, concurrency ${CONCURRENCY}, backend=${BACKEND} ==="
+  LOAD_ARGS=(--requests "$REQUESTS")
+fi
 python3 "$SCRIPT_DIR/load_test.py" \
   --url "$URL" \
-  --requests "$REQUESTS" \
+  "${LOAD_ARGS[@]}" \
   --concurrency "$CONCURRENCY" \
   --prompt "$PROMPT" \
   --max-tokens "$MAX_TOKENS"

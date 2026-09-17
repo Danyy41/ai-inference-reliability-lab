@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import FastAPI
@@ -47,6 +48,17 @@ def create_app() -> FastAPI:
     app.include_router(router)
     backend = build_backend()
     app.state.backend = backend
+
+    # Phase 8B: server-side generation concurrency limit - see
+    # experiments/phase8_concurrency_overload.md. 0 (default) means
+    # unlimited: no semaphore is created, and /generate never waits for one.
+    limit = settings.max_concurrent_generations
+    app.state.generation_semaphore = asyncio.Semaphore(limit) if limit > 0 else None
+    if limit > 0:
+        logger.warning(
+            "Server-side generation concurrency limit active: max %d concurrent generations",
+            limit,
+        )
 
     device = getattr(backend, "device", "n/a")
     model = settings.huggingface_model_name if settings.backend == "huggingface" else "n/a"
