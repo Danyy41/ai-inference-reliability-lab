@@ -4,7 +4,9 @@
 Given the exact [start_ts, end_ts] wall-clock window of a load-test run (plus
 an eval_ts taken after a post-workload settle period), this queries a running
 Prometheus for: request throughput, latency p50/p95/p99, error rate, token
-throughput, process CPU, process memory, and the active backend.
+throughput, process CPU, process memory, the active backend, end-to-end HTTP
+/generate latency p50/p95/p99, and (Phase 8+) the max in-flight and max
+actively-generating request counts.
 
 This is normally invoked by scripts/run_experiment.sh, which handles the
 pre/post settle buffers and timestamp bookkeeping - see that script and
@@ -74,6 +76,16 @@ class BaselineMetrics:
     active_backend: str
     active_device: str
     active_model: str
+    # Phase 8: concurrency/backpressure fields - see
+    # experiments/phase8_concurrency_overload.md. http_p*_latency_ms is the
+    # end-to-end /generate HTTP duration (includes any generation-slot queue
+    # wait); p*_latency_ms above stays the post-queue generation-only time.
+    # The gap between the two is the (approximate) queueing delay.
+    http_p50_latency_ms: float
+    http_p95_latency_ms: float
+    http_p99_latency_ms: float
+    max_in_flight_requests: float
+    max_active_generations: float
 
 
 def _counters_at(prometheus_url: str, backend: str, ts: float) -> dict[str, float]:
@@ -135,19 +147,20 @@ def capture(
 
     range_seconds = max(1, math.ceil((eval_ts - start_ts) + range_pad_seconds))
 
-    def quantile_ms(p: float) -> float:
-        query = (
-            f"histogram_quantile({p}, sum(rate("
-            f'inference_generation_latency_seconds_bucket{{backend="{backend}"}}'
-            f"[{range_seconds}s])) by (le))"
-        )
+    def quantile_ms(p: float, bucket_metric: str) -> float:
+        query = f"histogram_quantile({p}, sum(rate({bucket_metric}[{range_seconds}s])) by (le))"
         results = instant_query(prometheus_url, query, eval_ts)
         if not results or results[0]["value"][1] == "NaN":
             return float("nan")
         return float(results[0]["value"][1]) * 1000
 
+    generation_bucket_metric = f'inference_generation_latency_seconds_bucket{{backend="{backend}"}}'
+    http_bucket_metric = 'http_request_duration_seconds_bucket{path="/generate"}'
+
     mem_max_query = f"max_over_time(process_resident_memory_bytes[{range_seconds}s])"
     mem_avg_query = f"avg_over_time(process_resident_memory_bytes[{range_seconds}s])"
+    in_flight_max_query = f"max_over_time(inference_requests_in_flight[{range_seconds}s])"
+    active_max_query = f"max_over_time(inference_generations_active[{range_seconds}s])"
 
     backend_info_query = f'inference_backend_info{{backend="{backend}"}}'
     info_results = instant_query(prometheus_url, backend_info_query, eval_ts)
@@ -164,9 +177,9 @@ def capture(
         total_errors=round(total_error),
         request_throughput_rps=total_requests / window_seconds,
         error_rate=(total_error / total_requests) if total_requests > 0 else 0.0,
-        p50_latency_ms=quantile_ms(0.50),
-        p95_latency_ms=quantile_ms(0.95),
-        p99_latency_ms=quantile_ms(0.99),
+        p50_latency_ms=quantile_ms(0.50, generation_bucket_metric),
+        p95_latency_ms=quantile_ms(0.95, generation_bucket_metric),
+        p99_latency_ms=quantile_ms(0.99, generation_bucket_metric),
         total_completion_tokens=round(total_tokens),
         token_throughput_tps=total_tokens / window_seconds,
         process_cpu_avg_cores=cpu_delta / window_seconds,
@@ -179,6 +192,15 @@ def capture(
         active_backend=labels.get("backend", "unknown"),
         active_device=labels.get("device", "unknown"),
         active_model=labels.get("model", "unknown"),
+        http_p50_latency_ms=quantile_ms(0.50, http_bucket_metric),
+        http_p95_latency_ms=quantile_ms(0.95, http_bucket_metric),
+        http_p99_latency_ms=quantile_ms(0.99, http_bucket_metric),
+        max_in_flight_requests=single_value(
+            instant_query(prometheus_url, in_flight_max_query, eval_ts), in_flight_max_query
+        ),
+        max_active_generations=single_value(
+            instant_query(prometheus_url, active_max_query, eval_ts), active_max_query
+        ),
     )
 
 
@@ -201,6 +223,11 @@ def print_report(metrics: BaselineMetrics) -> None:
         f"Active backend:         backend={metrics.active_backend} "
         f"device={metrics.active_device} model={metrics.active_model}"
     )
+    print(f"HTTP /generate p50:     {metrics.http_p50_latency_ms:.2f} ms")
+    print(f"HTTP /generate p95:     {metrics.http_p95_latency_ms:.2f} ms")
+    print(f"HTTP /generate p99:     {metrics.http_p99_latency_ms:.2f} ms")
+    print(f"Max in-flight requests: {metrics.max_in_flight_requests:.0f}")
+    print(f"Max active generations: {metrics.max_active_generations:.0f}")
 
 
 def parse_args() -> argparse.Namespace:

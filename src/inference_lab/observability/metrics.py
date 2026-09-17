@@ -129,6 +129,28 @@ INFERENCE_GPU_MEMORY_PEAK_BYTES = Gauge(
     ["backend"],
 )
 
+# --- Phase 8: concurrency/backpressure observability -----------------------
+#
+# Two label-free gauges distinguishing "queued or executing" from "actually
+# executing" /generate requests - see experiments/phase8_concurrency_overload.md.
+# INFERENCE_REQUESTS_IN_FLIGHT increments as soon as a /generate request is
+# accepted (before it waits for a generation slot) and decrements only once
+# the whole request is done. INFERENCE_GENERATIONS_ACTIVE increments only
+# after a request has acquired the generation semaphore (or immediately, in
+# unlimited mode) and decrements as soon as backend.generate() returns - so
+# the gap between the two gauges' values is queued-but-not-yet-executing
+# requests.
+INFERENCE_REQUESTS_IN_FLIGHT = Gauge(
+    "inference_requests_in_flight",
+    "Number of /generate requests currently queued for or executing generation.",
+)
+
+INFERENCE_GENERATIONS_ACTIVE = Gauge(
+    "inference_generations_active",
+    "Number of /generate requests currently executing backend.generate() "
+    "(i.e. have acquired a generation slot).",
+)
+
 
 def record_http_request(method: str, path: str, status: int, duration_seconds: float) -> None:
     """Record one completed HTTP request.

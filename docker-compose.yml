@@ -11,6 +11,10 @@ services:
       # default in the file itself; override it on the command line so
       # "healthy" always means "don't pass an override," not "undo an edit."
       INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS: ${INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS:-0}
+      # Server-side generation concurrency limit (Phase 8B): defaults to 0
+      # (unlimited) unless overridden via a shell env var at `docker compose
+      # up` time - see experiments/phase8_concurrency_overload.md.
+      INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS: ${INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s

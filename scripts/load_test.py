@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Simple concurrent load-testing script for the inference API.
 
-Fires N requests at POST /generate with a configurable concurrency level and
+Fires requests at POST /generate with a configurable concurrency level and
 reports latency percentiles and error rate. This is the benchmarking tool
 used to measure the impact of intentionally-introduced failures and their
-fixes in later versions of the lab.
+fixes in later versions of the lab. Supports two mutually exclusive modes:
+a fixed request count (--requests), or a fixed wall-clock duration
+(--duration-seconds) that keeps exactly --concurrency requests continuously
+in flight for that long - needed for high-concurrency sweeps where a fixed
+count could finish in a few seconds against an unbounded async backend.
 
 Usage:
     python scripts/load_test.py --url http://localhost:8000 --requests 200 --concurrency 20
+    python scripts/load_test.py --url http://localhost:8000 --duration-seconds 30 --concurrency 100
 """
 
 import argparse
@@ -65,9 +70,19 @@ async def send_request(
         return RequestOutcome(latency_ms=latency_ms, status_code=0, error=str(exc))
 
 
+def _connection_limits(concurrency: int) -> httpx.Limits:
+    """Gives the client's own connection pool enough headroom above the
+    requested concurrency that it can never become the bottleneck - without
+    this, httpx's default max_connections=100 would confound a concurrency=100
+    sweep with a client-side artifact rather than real server behavior."""
+    return httpx.Limits(max_connections=concurrency + 20, max_keepalive_connections=concurrency)
+
+
 async def run_load_test(
     url: str, num_requests: int, concurrency: int, prompt: str, max_tokens: int
 ) -> LoadTestResult:
+    """Fixed-count mode: fires exactly num_requests total, throttled to at
+    most `concurrency` in flight at once via a semaphore."""
     result = LoadTestResult()
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -76,7 +91,7 @@ async def run_load_test(
             return await send_request(client, url, prompt, max_tokens)
 
     start = time.perf_counter()
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, limits=_connection_limits(concurrency)) as client:
         tasks = [bounded_send(client) for _ in range(num_requests)]
         result.outcomes = await asyncio.gather(*tasks)
     result.total_wall_time_s = time.perf_counter() - start
@@ -84,7 +99,37 @@ async def run_load_test(
     return result
 
 
-def print_report(result: LoadTestResult, num_requests: int) -> None:
+async def run_load_test_by_duration(
+    url: str, duration_seconds: float, concurrency: int, prompt: str, max_tokens: int
+) -> LoadTestResult:
+    """Fixed-duration mode: runs exactly `concurrency` looping workers for
+    duration_seconds, each firing requests back-to-back with no gap - keeps
+    `concurrency` requests continuously in flight for the whole window,
+    rather than stopping once a fixed count is reached. Needed for sweeps
+    where a high concurrency against an unbounded async backend could
+    otherwise finish a fixed request count in a few seconds, too short for
+    Prometheus's scrape interval to sample peak behavior."""
+    result = LoadTestResult()
+
+    async def worker(client: httpx.AsyncClient, stop_at: float) -> list[RequestOutcome]:
+        outcomes = []
+        while time.perf_counter() < stop_at:
+            outcomes.append(await send_request(client, url, prompt, max_tokens))
+        return outcomes
+
+    start = time.perf_counter()
+    stop_at = start + duration_seconds
+    async with httpx.AsyncClient(timeout=30.0, limits=_connection_limits(concurrency)) as client:
+        workers = (worker(client, stop_at) for _ in range(concurrency))
+        worker_results = await asyncio.gather(*workers)
+    result.total_wall_time_s = time.perf_counter() - start
+    result.outcomes = [outcome for outcomes in worker_results for outcome in outcomes]
+
+    return result
+
+
+def print_report(result: LoadTestResult) -> None:
+    num_requests = len(result.outcomes)
     successes = result.successes
     failures = result.failures
     throughput = num_requests / result.total_wall_time_s if result.total_wall_time_s > 0 else 0.0
@@ -115,25 +160,48 @@ def print_report(result: LoadTestResult, num_requests: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://localhost:8000", help="Base URL of the API")
-    parser.add_argument("--requests", type=int, default=100, help="Total number of requests")
+    parser.add_argument(
+        "--requests", type=int, default=None, help="Total number of requests (fixed-count mode)"
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=None,
+        help="Run for this many seconds instead of a fixed request count (fixed-duration mode)",
+    )
     parser.add_argument("--concurrency", type=int, default=10, help="Concurrent in-flight requests")
     parser.add_argument("--prompt", default="Tell me about reliability engineering.")
     parser.add_argument("--max-tokens", type=int, default=64)
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if (args.requests is None) == (args.duration_seconds is None):
+        parser.error("Specify exactly one of --requests or --duration-seconds")
+    return args
 
 
 def main() -> None:
     args = parse_args()
-    result = asyncio.run(
-        run_load_test(
-            url=args.url,
-            num_requests=args.requests,
-            concurrency=args.concurrency,
-            prompt=args.prompt,
-            max_tokens=args.max_tokens,
+    if args.duration_seconds is not None:
+        result = asyncio.run(
+            run_load_test_by_duration(
+                url=args.url,
+                duration_seconds=args.duration_seconds,
+                concurrency=args.concurrency,
+                prompt=args.prompt,
+                max_tokens=args.max_tokens,
+            )
         )
-    )
-    print_report(result, args.requests)
+    else:
+        result = asyncio.run(
+            run_load_test(
+                url=args.url,
+                num_requests=args.requests,
+                concurrency=args.concurrency,
+                prompt=args.prompt,
+                max_tokens=args.max_tokens,
+            )
+        )
+    print_report(result)
 
 
 if __name__ == "__main__":
