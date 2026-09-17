@@ -167,11 +167,15 @@ resolution fix).**
 - Does **not** edit `experiments/phase5_healthy_baseline.md` or
   `experiments/phase6_latency_fault.md` - those stay as the historical
   record of the real runs that used the old buckets.
-- See `experiments/phase7_histogram_fix.md` for the full diagnosis and a
-  real (non-Docker, non-official) rehearsal that already shows the fix
-  working: p95/p99 gaps against the client-side numbers shrank from
-  Phase 6's 132ms/170ms down to ~7ms/~2ms. Official reruns against the
-  Docker Compose stack (healthy + the same +500ms fault) are pending.
+- **Complete**: official Docker Compose reruns (healthy + the same
+  +500ms fault) confirm the fix. The Prometheus/client-side p95/p99 gap
+  shrank from Phase 6's real 132ms/170ms down to **17.4ms/19.0ms** -
+  roughly a 7-9x reduction, and within the ~20-30ms target from the
+  approved plan. Throughput, error rate, CPU, memory, and backend
+  identity stayed materially unchanged, confirming this was purely a
+  measurement fix. The healthy rerun reproduced Phase 5's numbers
+  closely, confirming no regression. Full comparison in
+  `experiments/phase7_histogram_fix.md`.
 - Not included yet: any additional failure type, Kubernetes, vLLM, GPU
   Docker, autoscaling.
 
@@ -782,10 +786,11 @@ ruff check .
 - **Phase 6**: Controlled latency fault injection - complete. Real
   numbers measured and compared against the Phase 5 baseline in
   `experiments/phase6_latency_fault.md`.
-- **Phase 7**: Histogram bucket resolution fix - diagnosis, fix, and
-  regression test complete; official Docker Compose reruns (healthy +
-  the same +500ms fault, to confirm no regression and prove the fix)
-  pending. See `experiments/phase7_histogram_fix.md`.
+- **Phase 7**: Histogram bucket resolution fix - complete. Diagnosis, fix,
+  regression test, and official Docker Compose reruns (healthy + the same
+  +500ms fault) all confirm no regression and a ~7-9x reduction in
+  p95/p99 histogram-quantile error. See
+  `experiments/phase7_histogram_fix.md`.
 - **Phase 8+**: Further deliberately induced failure scenarios (OOM,
   queueing/backpressure issues, autoscaling gaps), each measured with
   `scripts/run_experiment.sh` and compared directly against the Phase 5

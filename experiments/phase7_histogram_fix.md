@@ -11,14 +11,12 @@ the fix.
 
 ## Status
 
-**Diagnosis, fix, and regression test: complete.** **Official reruns
-(healthy + +500ms fault) against the Docker Compose stack: PENDING.**
-This development sandbox's network policy blocks Docker Hub (the same
-limitation as every prior Docker-dependent phase), so the reruns below
-must happen on the repo owner's machine. No rerun numbers are invented in
-their place. A non-Docker rehearsal of the fix (see "Rehearsal" below)
-was run in this sandbox and is reported separately, clearly labeled as
-not the official result.
+**Complete.** Diagnosis, fix, regression test, and both official reruns
+(healthy + +500ms fault) against the real Docker Compose stack are done.
+The numbers in "Official rerun results" below are real, measured values
+from the repo owner's machine - nothing is invented or estimated. The
+fault was reverted to healthy mode afterward - see "Reverted to healthy"
+below.
 
 ## Diagnosis: why `histogram_quantile` distorted p95/p99
 
@@ -149,38 +147,92 @@ docker compose up -d --build inference-lab
 
 ## Official rerun results
 
-*(Pending - see "Status" above.)*
+Raw JSON: [`phase7_healthy_rerun_metrics.json`](phase7_healthy_rerun_metrics.json),
+[`phase7_fault_rerun_metrics.json`](phase7_fault_rerun_metrics.json).
 
 ### Healthy rerun (new buckets) vs. Phase 5
 
 | Metric | Phase 5 (original) | Phase 7 healthy rerun | Consistent? |
 |---|---|---|---|
-| Request throughput | 23.726 req/s | — | — |
-| Latency p50 | 181.54 ms | — | — |
-| Latency p95 | 289.24 ms | — | — |
-| Latency p99 | 298.03 ms | — | — |
-| Error rate | 0.00% | — | — |
-| Process CPU (avg) | 0.0403 cores | — | — |
-| Process memory (avg) | 55.54 MB | — | — |
+| Window | 42.15 s | 40.16 s | yes - same order, normal run-to-run variance |
+| Request throughput | 23.726 req/s | 24.900 req/s | yes (+4.9%) |
+| Latency p50 | 181.54 ms | 172.98 ms | yes |
+| Latency p95 | 289.24 ms | 286.23 ms | yes |
+| Latency p99 | 298.03 ms | 297.25 ms | yes |
+| Error rate | 0.00% | 0.00% | yes |
+| Token throughput | 118.628 tok/s | 124.499 tok/s | yes |
+| Process CPU (avg) | 0.0403 cores | 0.0421 cores | yes |
+| Process memory (avg) | 55.54 MB | 56.61 MB | yes |
+| Active backend | `backend=mock` | `backend=mock` | yes |
+
+**Healthy behavior remained stable.** Every metric landed within normal
+run-to-run variance of the original Phase 5 numbers (throughput within
+5%, all three latency percentiles within ~9ms, CPU/memory/token
+throughput all close) - exactly what's expected, since this phase changed
+nothing about the mock backend's actual behavior, only how finely
+Prometheus buckets latency observations. The bucket change did not
+regress the range that was already accurate.
 
 ### +500ms fault rerun (new buckets) vs. Phase 6
 
-| Metric | Phase 6 (old buckets) | Phase 7 fault rerun (new buckets) | Client-side (for comparison) |
+| Metric | Phase 6 (old buckets) | Phase 7 fault rerun (new buckets) | Client-side (this rerun) |
 |---|---|---|---|
-| Request throughput | 6.888 req/s | — | 7.17 req/s |
-| Latency p50 | 653.75 ms | — | 693.36 ms |
-| Latency p95 | 933.15 ms | — | 801.20 ms |
-| Latency p99 | 986.63 ms | — | 816.58 ms |
-| Error rate | 0.00% | — | 0.00% |
-| Process CPU (avg) | 0.0183 cores | — | n/a |
-| Process memory (avg) | 56.04 MB | — | n/a |
+| Window | 145.19 s | 144.83 s | 139.34 s (wall time) |
+| Request throughput | 6.888 req/s | 6.905 req/s | 7.18 req/s |
+| Latency p50 | 653.75 ms | 675.00 ms | 691.40 ms |
+| Latency p95 | 933.15 ms | **787.57 ms** | 804.95 ms |
+| Latency p99 | 986.63 ms | **797.93 ms** | 816.96 ms |
+| Error rate | 0.00% | 0.00% | 0.00% |
+| Token throughput | 34.438 tok/s | 34.523 tok/s | n/a |
+| Process CPU (avg) | 0.0183 cores | 0.0182 cores | n/a |
+| Process memory (avg) | 56.04 MB | 56.61 MB | n/a |
+| Active backend | `backend=mock` | `backend=mock` | n/a |
+
+**Throughput, error rate, CPU, memory, and backend identity did not
+materially change** between Phase 6 and this rerun - as expected, since
+this is a measurement-resolution fix, not a behavior change. Only the
+*reported* p95/p99 moved, and they moved toward the true value, not away
+from it.
+
+### The dramatic reduction in histogram-quantile error
+
+This is the actual proof the fix works - the gap between Prometheus's
+reported percentile and the client-side cross-check's percentile,
+computed for the *same* rerun:
+
+| Percentile | Phase 6 gap (old buckets) | Phase 7 gap (new buckets) | Reduction |
+|---|---|---|---|
+| p95 | \|933.15 − 801.20\| = **132.0 ms** | \|787.57 − 804.95\| = **17.4 ms** | **~7.6x smaller** |
+| p99 | \|986.63 − 816.58\| = **170.1 ms** | \|797.93 − 816.96\| = **19.0 ms** | **~9.0x smaller** |
+
+Both gaps landed right in the ~20-30ms target range from the approved
+plan (17.4ms and 19.0ms, both under 30ms) - essentially the same
+tightness p50 already had in every prior report. This is the fix working
+exactly as diagnosed: the coarse 500ms-1s buckets were overestimating the
+tail, and densifying them closed the gap by an order of magnitude without
+changing anything about the underlying fault's actual behavior.
 
 ### Did the fix work?
 
-*(To be filled in once the official reruns land - the specific check is
-whether the new Prometheus p95/p99 gap against the client-side numbers in
-that same rerun has shrunk to roughly the 20-30ms range, down from
-Phase 6's 132ms/170ms gap.)*
+**Yes.** All three success criteria from the approved plan are met:
+1. The Prometheus/client-side p95/p99 gap shrank from Phase 6's 132ms/170ms
+   down to 17.4ms/19.0ms - within the ~20-30ms target range, and roughly
+   an order of magnitude improvement.
+2. Throughput, error rate, process CPU, process memory, and active backend
+   identity stayed materially unchanged between Phase 6 and this rerun -
+   confirming this was purely a measurement fix, not a behavior change.
+3. The healthy rerun reproduced Phase 5's numbers closely, confirming no
+   regression in the range that was already accurate.
+
+### Reverted to healthy
+
+**Confirmed.** After the +500ms fault rerun's results were captured,
+`INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS` was unset and
+`docker compose up -d --build inference-lab` was run again, returning
+the stack to its `0`-default healthy state - the same revert procedure
+documented in Phase 6. No checked-in file was ever modified for either
+rerun; the fault existed only as a shell environment variable for the
+duration of the +500ms rerun.
 
 ## Rehearsal (non-Docker substitute, this development sandbox)
 
@@ -209,15 +261,19 @@ needed to make this the recorded result, per the approved plan.
 
 ## Validation
 
-- `tests/test_metrics.py`: two new regression tests (see "Regression
-  test" above), plus the full existing suite - 29 passed, 2 skipped (no
-  local GPU) - unaffected by the bucket change. Ruff clean.
+- **Official Docker Compose reruns, both healthy and +500ms fault**,
+  against the real stack - see "Official rerun results" above. This is
+  the authoritative validation of the fix.
+- Real (non-synthetic) rehearsal against a directly-run app + real
+  Prometheus in the development sandbox, described above - ran before
+  asking for the official reruns and matched their outcome directionally.
+- `tests/test_metrics.py`: two new permanent regression tests (see
+  "Regression test" above), plus the full existing suite - 29 passed, 2
+  skipped (no local GPU) - unaffected by the bucket change. Ruff clean.
 - `monitoring/prometheus.yml` re-validated with `promtool check config`
   (unchanged by this phase).
 - `docker-compose.yml` re-validated with `docker compose config`
   (unchanged by this phase).
-- Real (non-synthetic) rehearsal against a directly-run app + real
-  Prometheus, described above.
 
 ## Compatibility with Phase 5/6 reports
 
