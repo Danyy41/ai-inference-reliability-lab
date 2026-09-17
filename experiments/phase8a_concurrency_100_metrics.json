@@ -1,0 +1,17 @@
+{
+  "note": "Client-side load_test.py output. Load generator and server both ran inside the inference-lab container against 127.0.0.1:8000 (loopback) to avoid the WSL -> Windows localhost -> Docker Desktop transport confound documented in experiments/phase8_concurrency_overload.md.",
+  "mode": "unlimited (INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS unset)",
+  "concurrency": 100,
+  "duration_seconds": 30,
+  "total_requests": 3518,
+  "successes": 3518,
+  "failures": 0,
+  "error_rate": 0.0,
+  "wall_time_s": 31.11,
+  "throughput_rps": 113.09,
+  "latency_mean_ms": 862.84,
+  "latency_p50_ms": 297.66,
+  "latency_p95_ms": 3776.81,
+  "latency_p99_ms": 5273.51,
+  "latency_max_ms": 5537.81
+}

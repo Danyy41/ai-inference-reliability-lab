@@ -203,12 +203,19 @@ resolution fix).**
   fixed request count could finish in a few seconds at high concurrency
   against an unbounded async backend - too short to sample peak behavior.
   Every historical Phase 5-7 command is unaffected.
-- **PENDING**: real Docker Compose sweeps for both sub-phases. A
-  non-Docker rehearsal in this sandbox already confirms the exact expected
-  contrast (8A: throughput scales, latency flat, no queueing possible;
-  8B: throughput plateaus, HTTP latency triples, generation latency stays
-  flat, active-generations pins at the limit while in-flight keeps
-  climbing) - see `experiments/phase8_concurrency_overload.md`.
+- **Complete**: the real Docker Compose comparison (concurrency 100, 30s,
+  run from inside the container to avoid a WSL/Docker-Desktop transport
+  bottleneck - see the report) proved the gauge mechanism directly:
+  `inference_requests_in_flight` peaked at 100 while
+  `inference_generations_active` peaked at exactly 10, the semaphore limit
+  - ~90 requests measurably queued. It also surfaced a genuine finding
+  beyond the original prediction: unlimited mode's own tail latency at
+  concurrency 100 (p99 5273ms) was *worse* than the limit=10 mode's p99
+  (1998ms), despite roughly half the throughput - unbounded concurrency
+  has a real cost even against a non-blocking mock backend once
+  per-request overhead compounds at high concurrency, and admission
+  control traded throughput for a dramatically more predictable tail.
+  Full analysis in `experiments/phase8_concurrency_overload.md`.
 - Not included yet: any additional failure type, Kubernetes, vLLM, GPU
   Docker, autoscaling, CPU/resource limits (deliberately excluded - the
   mock backend's non-blocking `asyncio.sleep` means a CPU limit wouldn't
@@ -301,7 +308,9 @@ experiments/
 ├── phase6_latency_fault.md            # controlled extra-latency fault vs. the Phase 5 baseline
 ├── phase6_latency_fault_metrics.json
 ├── phase7_histogram_fix.md            # diagnosis + fix for Phase 6's p95/p99 measurement distortion
-└── phase8_concurrency_overload.md     # natural vs. controlled concurrency/backpressure sweep
+├── phase8_concurrency_overload.md     # natural vs. controlled concurrency/backpressure comparison
+├── phase8a_concurrency_100_metrics.json
+└── phase8b_concurrency_100_metrics.json
 ```
 
 ## Setup
@@ -628,7 +637,7 @@ When the limit is active, `docker compose logs inference-lab` shows a
 max 10 concurrent generations`) at startup.
 
 See `experiments/phase8_concurrency_overload.md` for the full experiment,
-the two new concurrency gauges, and the (pending) real measured results.
+the two new concurrency gauges, and the real measured results.
 
 ## Running with Docker
 
@@ -883,9 +892,10 @@ ruff check .
   +500ms fault) all confirm no regression and a ~7-9x reduction in
   p95/p99 histogram-quantile error. See
   `experiments/phase7_histogram_fix.md`.
-- **Phase 8**: Overload / backpressure experiment - implementation
-  complete (concurrency limit, in-flight/active gauges, fixed-duration
-  sweep mode), real Docker Compose sweeps **pending**. See
+- **Phase 8**: Overload / backpressure experiment - complete. Real
+  Docker Compose comparison (concurrency 100) proved the admission-control
+  mechanism directly (100 in-flight, 10 active) and surfaced a genuine
+  tail-latency finding beyond the original prediction. See
   `experiments/phase8_concurrency_overload.md`.
 - **Phase 9+**: Further deliberately induced failure scenarios (OOM,
   autoscaling gaps), each measured with `scripts/run_experiment.sh` and

@@ -1,0 +1,19 @@
+{
+  "note": "Client-side load_test.py output plus Prometheus gauge maxima. Load generator and server both ran inside the inference-lab container against 127.0.0.1:8000 (loopback) to avoid the WSL -> Windows localhost -> Docker Desktop transport confound documented in experiments/phase8_concurrency_overload.md.",
+  "mode": "limited (INFERENCE_LAB_MAX_CONCURRENT_GENERATIONS=10)",
+  "concurrency": 100,
+  "duration_seconds": 30,
+  "total_requests": 1772,
+  "successes": 1772,
+  "failures": 0,
+  "error_rate": 0.0,
+  "wall_time_s": 31.97,
+  "throughput_rps": 55.42,
+  "latency_mean_ms": 1745.41,
+  "latency_p50_ms": 1783.10,
+  "latency_p95_ms": 1943.07,
+  "latency_p99_ms": 1998.10,
+  "latency_max_ms": 2061.78,
+  "max_inference_requests_in_flight": 100,
+  "max_inference_generations_active": 10
+}
