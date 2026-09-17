@@ -7,7 +7,8 @@ them, and benchmark the improvement.
 This is a portfolio project developed in stages. **This README covers
 Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results,
 Phase 4A (Docker containerization), Phase 4B (Prometheus + Grafana
-observability), and Phase 5 (the healthy-baseline load test).**
+observability), Phase 5 (the healthy-baseline load test), and Phase 6
+(controlled latency fault injection).**
 
 ## Version 0.1 scope
 
@@ -117,6 +118,30 @@ observability), and Phase 5 (the healthy-baseline load test).**
   in `experiments/phase5_healthy_baseline.md`.
 - Not included yet: failure injection, Kubernetes, vLLM, GPU Docker.
 
+## Phase 6 scope: controlled latency fault injection
+
+- One deliberate, reversible fault: a fixed extra delay added on top of
+  the mock backend's existing random latency, controlled entirely by
+  `INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS` (default `0` - rejected if
+  negative). At the default, behavior is byte-for-byte identical to
+  Phase 5.
+- A `WARNING`-level startup log makes an active fault operationally
+  obvious - never silent.
+- Reuses the exact Phase 5 workload and tooling
+  (`scripts/run_experiment.sh` + `scripts/capture_prometheus_metrics.py`)
+  unchanged - only the fault differs between the two runs, not how
+  either is measured.
+- `docker-compose.yml` gets one new `environment:` line using Compose's
+  `${VAR:-0}` substitution, so enabling/reverting the fault is a shell
+  environment variable at `docker compose up` time, never a file edit -
+  see "Failure injection" below for the exact commands (Linux/macOS and
+  Windows PowerShell).
+- See `experiments/phase6_latency_fault.md` for the fault's expected
+  diagnostic signature and the real results once run.
+- Not included yet: any fix for this fault (that's Phase 7), other
+  failure types (random failures, memory/CPU pressure), Kubernetes,
+  vLLM, GPU Docker.
+
 ## Architecture
 
 ```
@@ -199,7 +224,8 @@ monitoring/
 
 experiments/
 ├── phase3_gpu_benchmark.md         # CPU vs. NVIDIA A40 benchmark
-└── phase5_healthy_baseline.md      # reference measurement for failure-injection comparisons
+├── phase5_healthy_baseline.md      # reference measurement for failure-injection comparisons
+└── phase6_latency_fault.md         # controlled extra-latency fault vs. the Phase 5 baseline
 ```
 
 ## Setup
@@ -274,6 +300,7 @@ All settings are environment variables prefixed `INFERENCE_LAB_` (see
 |---|---|---|
 | `INFERENCE_LAB_BACKEND` | `mock` | `mock` or `huggingface` |
 | `INFERENCE_LAB_LOG_LEVEL` | `INFO` | Python logging level |
+| `INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS` | `0` | Fault-injection knob (Phase 6+): fixed extra delay added to every mock request; rejects negative values - see "Failure injection" below |
 | `INFERENCE_LAB_HUGGINGFACE_MODEL_NAME` | `sshleifer/tiny-gpt2` | Any causal-LM model on the Hugging Face Hub |
 | `INFERENCE_LAB_HUGGINGFACE_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` (see CPU vs. GPU below) |
 | `INFERENCE_LAB_HUGGINGFACE_MAX_NEW_TOKENS_CAP` | `256` | Hard ceiling on tokens generated per request |
@@ -418,6 +445,60 @@ endings to run under WSL - a Windows Git checkout with
 setting, so a fresh clone is unaffected. If you already have a CRLF copy
 from before this fix, run `git add --renormalize .` (or re-clone) to pick
 it up.
+
+## Failure injection: controlled latency fault
+
+`INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS` adds a fixed extra delay on top of
+the mock backend's normal random latency, entirely via config - no code
+changes needed to enable or disable it. Default `0` (rejected if
+negative) means healthy behavior is unaffected unless you explicitly
+override it. `docker-compose.yml` reads it as
+`${INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS:-0}`, so the override is always a
+shell environment variable at `docker compose up` time, never a file
+edit.
+
+**Enable the fault (Linux/macOS):**
+
+```bash
+INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS=500 docker compose up -d --build inference-lab
+```
+
+**Enable the fault (Windows PowerShell):**
+
+```powershell
+$env:INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS="500"
+docker compose up -d --build inference-lab
+```
+
+**Revert to healthy (Linux/macOS):**
+
+```bash
+unset INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS
+docker compose up -d --build inference-lab
+```
+
+**Revert to healthy (Windows PowerShell):**
+
+```powershell
+$env:INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS=$null
+docker compose up -d --build inference-lab
+```
+
+Assigning `$null` to a PowerShell environment variable removes it from
+the process environment, so Compose's `:-0` default takes over on the
+next `up` - the same "nothing to undo" property as the Linux `unset`.
+`scripts/run_experiment.sh` itself still needs a Bash-capable shell (WSL,
+Git Bash, etc.) even on Windows - only the container's environment
+variable is PowerShell-native here, not the experiment runner.
+
+When the fault is active, `docker compose logs inference-lab` shows a
+`WARNING`-level line (`Mock backend fault injection active: +500ms extra
+latency on every request`) at startup - if you don't see it after
+enabling, the container didn't pick up the new value (try
+`--force-recreate`).
+
+See `experiments/phase6_latency_fault.md` for the full experiment,
+its expected diagnostic signature, and the real measured results.
 
 ## Running with Docker
 
@@ -662,9 +743,13 @@ ruff check .
 - **Phase 4C**: NVIDIA/CUDA Docker image variant (see "CPU vs. future GPU
   Docker image" above), running the containerized service on a cloud GPU -
   with Prometheus/Grafana already in place to watch it.
-- **Phase 6+**: Deliberately induced failure scenarios (latency spikes,
-  OOM, queueing/backpressure issues, autoscaling gaps), each measured with
-  `scripts/run_experiment.sh` and compared directly against the Phase 5
-  healthy baseline - both as Markdown reports in `experiments/` and live
-  in the Grafana dashboard built in Phase 4B.
+- **Phase 6**: Controlled latency fault injection (this phase) - one fixed
+  extra-delay fault, measured against the Phase 5 baseline. Real numbers
+  pending a Docker Compose run.
+- **Phase 7+**: A fix for the Phase 6 fault, plus further deliberately
+  induced failure scenarios (OOM, queueing/backpressure issues,
+  autoscaling gaps), each measured with `scripts/run_experiment.sh` and
+  compared directly against the Phase 5 healthy baseline - both as
+  Markdown reports in `experiments/` and live in the Grafana dashboard
+  built in Phase 4B.
 - **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling.

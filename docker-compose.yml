@@ -5,6 +5,12 @@ services:
       - "8000:8000"
     environment:
       INFERENCE_LAB_BACKEND: mock
+      # Fault-injection knob (Phase 6+): defaults to 0 (healthy, unchanged
+      # behavior) unless overridden via a shell env var at `docker compose
+      # up` time - see experiments/phase6_latency_fault.md. Never edit this
+      # default in the file itself; override it on the command line so
+      # "healthy" always means "don't pass an override," not "undo an edit."
+      INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS: ${INFERENCE_LAB_MOCK_EXTRA_LATENCY_MS:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s

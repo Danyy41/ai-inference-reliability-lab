@@ -27,6 +27,7 @@ def build_backend() -> InferenceBackend:
         return MockBackend(
             min_latency_ms=settings.mock_min_latency_ms,
             max_latency_ms=settings.mock_max_latency_ms,
+            extra_latency_ms=settings.mock_extra_latency_ms,
         )
     if settings.backend == "huggingface":
         from inference_lab.backends.huggingface import HuggingFaceBackend
