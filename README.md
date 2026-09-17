@@ -7,8 +7,9 @@ them, and benchmark the improvement.
 This is a portfolio project developed in stages. **This README covers
 Versions 0.1, 0.2, Phase 3A, the first Phase 3 GPU benchmark results,
 Phase 4A (Docker containerization), Phase 4B (Prometheus + Grafana
-observability), Phase 5 (the healthy-baseline load test), and Phase 6
-(controlled latency fault injection).**
+observability), Phase 5 (the healthy-baseline load test), Phase 6
+(controlled latency fault injection), and Phase 7 (the histogram bucket
+resolution fix).**
 
 ## Version 0.1 scope
 
@@ -147,6 +148,33 @@ observability), Phase 5 (the healthy-baseline load test), and Phase 6
   failure types (random failures, memory/CPU pressure), Kubernetes,
   vLLM, GPU Docker.
 
+## Phase 7 scope: histogram bucket resolution fix
+
+- Diagnoses precisely why Phase 6's Prometheus-derived p95/p99 overshot
+  the client-observed values by 130-170ms: hand-deriving Prometheus's own
+  `histogram_quantile` linear-interpolation formula reproduces the real
+  Phase 6 numbers to within a millisecond - the old buckets had only two
+  boundaries (`0.75s`, `1.0s`) covering the fault's entire [550, 800]ms
+  true range, so 100% of observations fell into two 250ms-wide buckets.
+- Fixes it by densifying `_LATENCY_BUCKETS_SECONDS` with ~50-100ms steps
+  between 500ms and 1.5s (27 → 39 buckets total); buckets below 500ms and
+  above 1.5s are untouched since they were never the problem.
+- A permanent regression test (`tests/test_metrics.py`) re-implements
+  Prometheus's interpolation algorithm against a deterministic synthetic
+  distribution shaped like the Phase 6 fault, and proves the new buckets
+  keep p95/p99 error ≤30ms while the old buckets exceed 100ms error for
+  the same distribution - so this class of bug can't silently reappear.
+- Does **not** edit `experiments/phase5_healthy_baseline.md` or
+  `experiments/phase6_latency_fault.md` - those stay as the historical
+  record of the real runs that used the old buckets.
+- See `experiments/phase7_histogram_fix.md` for the full diagnosis and a
+  real (non-Docker, non-official) rehearsal that already shows the fix
+  working: p95/p99 gaps against the client-side numbers shrank from
+  Phase 6's 132ms/170ms down to ~7ms/~2ms. Official reruns against the
+  Docker Compose stack (healthy + the same +500ms fault) are pending.
+- Not included yet: any additional failure type, Kubernetes, vLLM, GPU
+  Docker, autoscaling.
+
 ## Architecture
 
 ```
@@ -232,7 +260,8 @@ experiments/
 ├── phase5_healthy_baseline.md         # reference measurement for failure-injection comparisons
 ├── phase5_healthy_baseline_metrics.json
 ├── phase6_latency_fault.md            # controlled extra-latency fault vs. the Phase 5 baseline
-└── phase6_latency_fault_metrics.json
+├── phase6_latency_fault_metrics.json
+└── phase7_histogram_fix.md            # diagnosis + fix for Phase 6's p95/p99 measurement distortion
 ```
 
 ## Setup
@@ -753,10 +782,14 @@ ruff check .
 - **Phase 6**: Controlled latency fault injection - complete. Real
   numbers measured and compared against the Phase 5 baseline in
   `experiments/phase6_latency_fault.md`.
-- **Phase 7+**: A fix for the Phase 6 fault, plus further deliberately
-  induced failure scenarios (OOM, queueing/backpressure issues,
-  autoscaling gaps), each measured with `scripts/run_experiment.sh` and
-  compared directly against the Phase 5 healthy baseline - both as
-  Markdown reports in `experiments/` and live in the Grafana dashboard
+- **Phase 7**: Histogram bucket resolution fix - diagnosis, fix, and
+  regression test complete; official Docker Compose reruns (healthy +
+  the same +500ms fault, to confirm no regression and prove the fix)
+  pending. See `experiments/phase7_histogram_fix.md`.
+- **Phase 8+**: Further deliberately induced failure scenarios (OOM,
+  queueing/backpressure issues, autoscaling gaps), each measured with
+  `scripts/run_experiment.sh` and compared directly against the Phase 5
+  healthy baseline (re-measured under Phase 7's corrected buckets) - both
+  as Markdown reports in `experiments/` and live in the Grafana dashboard
   built in Phase 4B.
 - **Later**: Add a vLLM backend, Kubernetes deployment, GPU scheduling.

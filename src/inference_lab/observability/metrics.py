@@ -2,12 +2,22 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 
 _BYTES_PER_MB = 1024 * 1024
 
-# Shared by both latency histograms below. Deliberately dense between 50ms
-# and 500ms - Phase 5 baseline validation showed that the previous coarser
-# buckets (a 250ms-500ms gap with zero real observations in it, since mock
-# latency tops out at 300ms) made histogram_quantile's linear interpolation
-# overshoot p95/p99 by 40-60% relative to the true client-observed values.
-# Still covers up to 120s for slower real-model generation latency.
+# Shared by both latency histograms below. Deliberately dense between 5ms
+# and 1.5s - Phase 5 baseline validation showed that coarse buckets between
+# 50ms and 500ms (a 250ms-500ms gap with zero real observations in it,
+# since mock latency tops out at 300ms) made histogram_quantile's linear
+# interpolation overshoot p95/p99 by 40-60% relative to the true
+# client-observed values. Phase 6's +500ms fault experiment then hit the
+# *same* failure mode one decade up: with all observations landing in
+# [550ms, 800ms], the old buckets had only 0.75s and 1.0s as boundaries in
+# that range, so 100% of the mass fell into just two 250ms-wide buckets and
+# linear interpolation (which assumes observations are spread evenly across
+# a bucket) overshot p95/p99 by ~130-170ms relative to the client-observed
+# values - see experiments/phase7_histogram_fix.md for the full diagnosis.
+# Buckets below 500ms and above 1.5s were already fine (see
+# tests/test_metrics.py for the regression test that would have caught
+# this the first time). Still covers up to 120s for slower real-model
+# generation latency.
 _LATENCY_BUCKETS_SECONDS = (
     0.005,
     0.01,
@@ -21,8 +31,20 @@ _LATENCY_BUCKETS_SECONDS = (
     0.3,
     0.4,
     0.5,
+    0.55,
+    0.6,
+    0.65,
+    0.7,
     0.75,
-    1,
+    0.8,
+    0.85,
+    0.9,
+    0.95,
+    1.0,
+    1.1,
+    1.2,
+    1.3,
+    1.4,
     1.5,
     2,
     3,
