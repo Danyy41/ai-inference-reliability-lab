@@ -156,19 +156,16 @@ The pre-provisioned **"AI Inference Reliability Lab"** dashboard
 5. GPU memory
 6. Active backend
 
-**Screenshots**: not embedded in this repo yet - Grafana only shows data
-while the stack is actually running and receiving traffic, and this
-project's real experiment data (Phases 5-8) was captured on the repo
-owner's own machine, not somewhere a screenshot could be taken from
-inside this development environment. To add them:
+![AI Inference Reliability Lab Grafana dashboard](docs/screenshots/grafana_dashboard_overview.png)
 
-1. `docker compose up --build`
-2. Generate some real traffic, e.g. `scripts/run_experiment.sh --requests 1000 --concurrency 5 ...` (see below) or just a few `curl`/`load_test.py` calls.
-3. Open http://localhost:3000 (`admin`/`admin`), open the dashboard, and screenshot each panel (or the whole dashboard).
-4. Save the images under `docs/screenshots/` and embed them here, e.g.:
-   ```markdown
-   ![Request rate and latency](docs/screenshots/dashboard-overview.png)
-   ```
+Real screenshot from the local Docker Compose stack (`docker compose up
+--build`, mock backend, healthy traffic). It shows: the `/generate`
+request rate; p50/p95/p99 generation latency holding a flat, tight band
+(the healthy signature established in Phase 5); token throughput tracking
+the request rate; the active backend table confirming `backend=mock`;
+GPU memory intentionally empty (`No data`) since mock/CPU mode never
+populates those gauges; and the error-rate panel also empty, since this
+particular captured workload produced zero errors.
 
 ## Reproducing the experiments
 
