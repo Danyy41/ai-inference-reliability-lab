@@ -41,6 +41,22 @@ curl -X POST https://ai-inference-reliability-lab.onrender.com/generate \
 scripts/live_smoke_test.sh https://ai-inference-reliability-lab.onrender.com
 ```
 
+**Production endpoint checks (user-verified).** On 2026-10-22 I checked
+the live URL by hand (these checks were run by me against the deployed
+service - not by CI or a sandbox):
+
+| Check | Observed result |
+|---|---|
+| `GET /health` | `{"status":"ok"}` |
+| `POST /generate` | HTTP 200 with a mock completion |
+| `GET /metrics` | Served successfully |
+| `inference_requests_total{backend="mock",status="success"}` | `2` at the time of the check |
+| `inference_backend_info{backend="mock",device="n/a",model="n/a"}` | `1` - mock backend, no device, no model loaded |
+
+Together these confirm the hosted service runs the mock backend with no
+active GPU and no loaded LLM. Counter values reset whenever the free
+instance restarts, so expect different numbers today.
+
 Free-tier caveat: the instance spins down when idle, so the first request
 after a quiet period can take up to about a minute while it cold-starts.
 See "Deployment" below for how it's hosted.
@@ -503,6 +519,7 @@ Dockerfile                    # two-stage build (builder -> runtime); listens on
 cloudbuild.yaml               # Cloud Build config for the slim mock-only image (Cloud Run)
 .gcloudignore                 # limits what gets uploaded to Cloud Build
 docker-compose.yml            # app + Prometheus + Grafana, together
+.github/workflows/ci.yml      # lint, tests, and both Docker image variants on every PR
 monitoring/
 ├── prometheus.yml            # scrape config (2s interval)
 └── grafana/
@@ -523,6 +540,13 @@ experiments/                  # one Markdown report + JSON artifact(s) per phase
 pytest          # full suite; HF backend tests auto-skip if the extra isn't installed
 ruff check .
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and
+push to `main`: `ruff check`, `ruff format --check`, and `pytest` on
+Python 3.10 and 3.11; `scripts/docker_smoke_test.sh` against the full
+default image (with the Hugging Face extra); and the slim mock-only image
+started with an injected `PORT=8080` and checked with
+`scripts/live_smoke_test.sh`.
 
 `tests/test_device.py` exercises CPU/CUDA branching on any machine via
 mocking `torch.cuda.is_available`; a couple of real-GPU-memory checks are

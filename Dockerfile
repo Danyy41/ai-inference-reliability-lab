@@ -80,11 +80,12 @@ EXPOSE 8000
 # environment variables, passed at `docker run` time - this image bakes in
 # no backend choice, model name, or device.
 #
-# The listening port comes from $PORT when set (Cloud Run injects it, 8080 by
-# default) and falls back to 8000 everywhere else, so `docker run`, Compose
-# and the smoke test are unchanged. `exec` makes uvicorn PID 1 so it receives
-# SIGTERM directly and shuts down gracefully. (Cloud Run ignores HEALTHCHECK;
-# it uses its own TCP startup probe on $PORT.)
+# The listening port comes from $PORT when set (managed platforms inject it:
+# Render defaults to 10000, Cloud Run to 8080) and falls back to 8000
+# everywhere else, so `docker run`, Compose and the smoke test are
+# unchanged. `exec` makes uvicorn PID 1 so it receives SIGTERM directly and
+# shuts down gracefully. (Render and Cloud Run ignore HEALTHCHECK and run
+# their own health checks against $PORT.)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('PORT', '8000'), timeout=3)"]
 
