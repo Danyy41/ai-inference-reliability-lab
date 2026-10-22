@@ -1,0 +1,29 @@
+# Cloud Build config for the Cloud Run demo image - used by
+# scripts/deploy_cloud_run.sh, not by local Docker/Compose.
+#
+# Builds the same Dockerfile as everywhere else, but with
+# INSTALL_HUGGINGFACE=false: the Cloud Run demo only ever runs the mock
+# backend, so torch/transformers are left out (66 MB vs. several hundred MB
+# compressed), which keeps cold starts fast and Artifact Registry storage
+# inside the free tier.
+#
+# Usage (normally via the deploy script):
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions _IMAGE=us-central1-docker.pkg.dev/PROJECT/REPO/inference-lab:TAG
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - INSTALL_HUGGINGFACE=false
+      - -t
+      - ${_IMAGE}
+      - .
+
+images:
+  - ${_IMAGE}
+
+options:
+  # Send build logs to Cloud Logging only, so the build doesn't depend on a
+  # Cloud Storage logs bucket and its IAM permissions.
+  logging: CLOUD_LOGGING_ONLY

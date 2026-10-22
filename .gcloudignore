@@ -1,0 +1,32 @@
+# Files NOT uploaded to Cloud Build by `gcloud builds submit`
+# (scripts/deploy_cloud_run.sh). Only what the Dockerfile needs is sent:
+# Dockerfile, .dockerignore, pyproject.toml, README.md and src/.
+.gcloudignore
+.git/
+.gitignore
+.gitattributes
+
+# Secrets / local env files - never upload these
+.env
+.env.*
+
+# Python virtual environments / caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Not needed to build the image
+tests/
+scripts/
+experiments/
+docs/
+monitoring/
+docker-compose.yml
+load_test_results/
+*.log
