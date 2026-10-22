@@ -116,4 +116,4 @@ SERVICE_URL="$(gcloud run services describe "$SERVICE_NAME" --project "$PROJECT_
   --region "$REGION" --format 'value(status.url)')"
 echo "=== Deployed: ${SERVICE_URL} ==="
 
-scripts/cloud_run_smoke_test.sh "$SERVICE_URL"
+scripts/live_smoke_test.sh "$SERVICE_URL"

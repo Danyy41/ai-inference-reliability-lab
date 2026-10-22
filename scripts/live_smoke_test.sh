@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Proves a deployed Cloud Run service (or any running instance) actually
-# serves traffic correctly, and that it is running the mock backend with no
-# GPU - the cloud equivalent of scripts/docker_smoke_test.sh.
+# Proves a deployed instance (the Render demo, a Cloud Run service, or any
+# running instance) actually serves traffic correctly, and that it is running
+# the mock backend with no GPU and no model - the hosted equivalent of
+# scripts/docker_smoke_test.sh.
 #
 # Usage:
-#   scripts/cloud_run_smoke_test.sh https://inference-lab-demo-xxxxx-uc.a.run.app
+#   scripts/live_smoke_test.sh https://ai-inference-reliability-lab.onrender.com
+#   scripts/live_smoke_test.sh http://localhost:8000
 set -euo pipefail
 
 BASE_URL="${1:?Usage: $0 <service-url>}"
 BASE_URL="${BASE_URL%/}"
 
 echo "=== GET /health ==="
-health_response="$(curl -sS -f --max-time 30 "${BASE_URL}/health")"
+# Generous timeout: a free-tier instance that has spun down can take up to
+# about a minute to cold-start on the first request.
+health_response="$(curl -sS -f --max-time 120 "${BASE_URL}/health")"
 echo "$health_response"
 echo "$health_response" | grep -q '"status":"ok"' || {
   echo "Unexpected /health response"
