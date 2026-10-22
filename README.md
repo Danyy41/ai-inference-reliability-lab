@@ -5,6 +5,62 @@ controlled ways, diagnosed with real metrics, fixed, and re-measured -
 every claim in this repo is backed by a real, reproducible experiment, not
 a simulation.
 
+## Live demo
+
+**https://ai-inference-reliability-lab.onrender.com** - the FastAPI
+inference API from this repo, running as a Docker container on a free
+[Render](https://render.com) web service.
+
+> **The hosted demo uses simulated inference.** It runs the **mock
+> backend** (`INFERENCE_LAB_BACKEND=mock`): `/generate` waits a random
+> 50-300ms and returns a placeholder completion (`"[mock completion for
+> prompt of N chars]"`) with word-count "token" numbers. There is **no
+> LLM, no GPU, no Hugging Face model download, and no paid LLM API**
+> behind it - it exists to show the API, request validation, metrics, and
+> container deployment working on real cloud infrastructure. The real
+> model work in this project (Hugging Face Transformers on CPU, and a CPU
+> vs. NVIDIA A40 GPU benchmark) is separate and runs locally or on a
+> rented GPU - see "Key results" and Phase 3 below.
+
+| Endpoint | Method | What it returns |
+|---|---|---|
+| [`/health`](https://ai-inference-reliability-lab.onrender.com/health) | GET | `{"status":"ok"}` - liveness check |
+| `/generate` | POST | A (simulated) completion plus `prompt_tokens`, `completion_tokens`, `finish_reason`, `latency_ms`, `tokens_per_second`; `gpu_memory_*_mb` are `null` (no GPU) |
+| [`/metrics`](https://ai-inference-reliability-lab.onrender.com/metrics) | GET | Prometheus exposition format; `inference_backend_info{backend="mock",device="n/a",model="n/a"}` identifies the active backend |
+| [`/docs`](https://ai-inference-reliability-lab.onrender.com/docs) | GET | FastAPI's auto-generated interactive OpenAPI docs |
+
+```bash
+curl https://ai-inference-reliability-lab.onrender.com/health
+
+curl -X POST https://ai-inference-reliability-lab.onrender.com/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Explain what an inference API does", "max_tokens": 16}'
+
+# Checks /health, /generate, and that /metrics reports the mock backend
+# with no device and no model - fails loudly otherwise
+scripts/live_smoke_test.sh https://ai-inference-reliability-lab.onrender.com
+```
+
+**Production endpoint checks (user-verified).** On 2026-10-22 I checked
+the live URL by hand (these checks were run by me against the deployed
+service - not by CI or a sandbox):
+
+| Check | Observed result |
+|---|---|
+| `GET /health` | `{"status":"ok"}` |
+| `POST /generate` | HTTP 200 with a mock completion |
+| `GET /metrics` | Served successfully |
+| `inference_requests_total{backend="mock",status="success"}` | `2` at the time of the check |
+| `inference_backend_info{backend="mock",device="n/a",model="n/a"}` | `1` - mock backend, no device, no model loaded |
+
+Together these confirm the hosted service runs the mock backend with no
+active GPU and no loaded LLM. Counter values reset whenever the free
+instance restarts, so expect different numbers today.
+
+Free-tier caveat: the instance spins down when idle, so the first request
+after a quiet period can take up to about a minute while it cold-starts.
+See "Deployment" below for how it's hosted.
+
 ## The story (60-second version)
 
 I built a small, realistic LLM inference service - FastAPI, a pluggable
@@ -349,6 +405,15 @@ exactly as without Docker - the image bakes in no backend choice, model,
 or device (though this CPU image's `torch` build has no CUDA support at
 all, so `auto` always resolves to `cpu` here regardless of `--gpus all`).
 
+The container listens on `$PORT` if set (e.g. `-e PORT=8080`), else
+`8000`. To build a slim **mock-only** image without torch/transformers
+(what the Cloud Run demo config uses), pass a build arg - the default
+(`true`) is the full image described above:
+
+```bash
+docker build --build-arg INSTALL_HUGGINGFACE=false -t inference-lab:mock .
+```
+
 For the Hugging Face backend, mount a volume so the model persists across
 restarts:
 
@@ -375,6 +440,50 @@ CPU-only one, run with `docker run --gpus all`. App code, the API, the
 health check, and the `auto` device detection are already
 hardware-agnostic (Phase 3A).
 
+## Deployment
+
+```
+Browser / curl
+  │  HTTPS
+  ▼
+Render edge (TLS termination, routing)  ──▶  free web service, spins down when idle
+  │  HTTP on $PORT
+  ▼
+Docker container (this repo's Dockerfile, non-root user)
+  └─ uvicorn (PID 1) ─▶ FastAPI app
+        ├─ GET /health, GET /metrics, POST /generate, GET /docs
+        └─ MockBackend (INFERENCE_LAB_BACKEND=mock) - no model, no GPU
+```
+
+- **Hosting**: a free Render web service built from this GitHub
+  repository's `Dockerfile`.
+- **Port**: the container listens on `$PORT` when the platform sets it
+  (Render and Cloud Run both inject it) and falls back to `8000`
+  everywhere else, so local `docker run`, Docker Compose, and
+  `scripts/docker_smoke_test.sh` are unchanged.
+- **Backend**: `mock` - also the app's default, so no model or GPU
+  configuration is needed. `/metrics` reports it via
+  `inference_backend_info{backend="mock",device="n/a",model="n/a"}`.
+- **Observability**: `/metrics` is exposed publicly for inspection, but
+  no Prometheus/Grafana runs alongside the hosted demo - that stack is the
+  local Docker Compose setup ("Grafana dashboard" above). Counters reset
+  whenever the free instance restarts or spins down.
+- **Verification**: `scripts/live_smoke_test.sh <url>` checks `/health`,
+  `/generate`, and the backend identity from `/metrics` against any
+  deployed URL.
+
+**Google Cloud Run (alternative, prepared but not currently deployed)**:
+`scripts/deploy_cloud_run.sh` builds a slim mock-only image with Cloud
+Build (`cloudbuild.yaml`, `INSTALL_HUGGINGFACE=false` - about 66 MB
+compressed, no torch/transformers) and deploys it with scale-to-zero, max
+2 instances, 1 vCPU / 512 MiB, and request-based billing. It prints the
+plan and requires typing `deploy` before creating anything; `--dry-run`
+only prints the commands:
+
+```bash
+GCP_PROJECT_ID=my-project scripts/deploy_cloud_run.sh --dry-run
+```
+
 ## Project layout
 
 ```
@@ -400,12 +509,17 @@ tests/                        # pytest suite
 scripts/
 ├── load_test.py              # async load-testing / benchmarking script (fixed-count or fixed-duration)
 ├── docker_smoke_test.sh      # build + run + health/generate check for the Docker image
+├── live_smoke_test.sh        # health/generate/backend-identity check against any deployed URL
+├── deploy_cloud_run.sh       # confirm-before-deploy Google Cloud Run script (mock backend)
 ├── run_experiment.sh         # reproducible experiment runner
 └── capture_prometheus_metrics.py  # pulls the experiment metrics from Prometheus
 
-Dockerfile                    # two-stage build (builder -> runtime)
+Dockerfile                    # two-stage build (builder -> runtime); listens on $PORT or 8000
 .dockerignore                 # keeps secrets/tests/dev tooling out of the image
+cloudbuild.yaml               # Cloud Build config for the slim mock-only image (Cloud Run)
+.gcloudignore                 # limits what gets uploaded to Cloud Build
 docker-compose.yml            # app + Prometheus + Grafana, together
+.github/workflows/ci.yml      # lint, tests, and both Docker image variants on every PR
 monitoring/
 ├── prometheus.yml            # scrape config (2s interval)
 └── grafana/
@@ -426,6 +540,13 @@ experiments/                  # one Markdown report + JSON artifact(s) per phase
 pytest          # full suite; HF backend tests auto-skip if the extra isn't installed
 ruff check .
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and
+push to `main`: `ruff check`, `ruff format --check`, and `pytest` on
+Python 3.10 and 3.11; `scripts/docker_smoke_test.sh` against the full
+default image (with the Hugging Face extra); and the slim mock-only image
+started with an injected `PORT=8080` and checked with
+`scripts/live_smoke_test.sh`.
 
 `tests/test_device.py` exercises CPU/CUDA branching on any machine via
 mocking `torch.cuda.is_available`; a couple of real-GPU-memory checks are

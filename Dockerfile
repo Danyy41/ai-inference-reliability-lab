@@ -31,9 +31,19 @@ COPY src ./src
 # The "huggingface" extra below also declares torch>=2.2; since the CPU
 # build installed here already satisfies that, pip leaves it alone instead
 # of pulling the GPU wheel a second time.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-RUN pip install --no-cache-dir ".[huggingface]"
+#
+# INSTALL_HUGGINGFACE=false skips torch/transformers entirely and installs
+# only the core (mock-backend) dependencies. The default (true) keeps this
+# image exactly as before; the Cloud Run demo (cloudbuild.yaml) passes false
+# so the deployed image stays small and cold starts stay fast - it runs the
+# mock backend only and never needs a model.
+ARG INSTALL_HUGGINGFACE=true
+RUN if [ "$INSTALL_HUGGINGFACE" = "true" ]; then \
+        pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+        && pip install --no-cache-dir ".[huggingface]"; \
+    else \
+        pip install --no-cache-dir .; \
+    fi
 
 # --- runtime -----------------------------------------------------------------
 # Minimal final image: just the built venv, the app source, and a non-root
@@ -69,7 +79,14 @@ EXPOSE 8000
 # All INFERENCE_LAB_* settings (see core/config.py) are still plain
 # environment variables, passed at `docker run` time - this image bakes in
 # no backend choice, model name, or device.
+#
+# The listening port comes from $PORT when set (managed platforms inject it:
+# Render defaults to 10000, Cloud Run to 8080) and falls back to 8000
+# everywhere else, so `docker run`, Compose and the smoke test are
+# unchanged. `exec` makes uvicorn PID 1 so it receives SIGTERM directly and
+# shuts down gracefully. (Render and Cloud Run ignore HEALTHCHECK and run
+# their own health checks against $PORT.)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('PORT', '8000'), timeout=3)"]
 
-CMD ["uvicorn", "inference_lab.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn inference_lab.main:app --host 0.0.0.0 --port \"${PORT:-8000}\""]

@@ -1,0 +1,65 @@
+# Continuous integration: lint + unit tests, plus both Docker image variants
+# built and smoke-tested exactly as a contributor would run them locally.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint and test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.10 is the minimum in pyproject.toml; 3.11 matches the Dockerfile.
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Mock-only install: the torch/transformers tests auto-skip, the same
+      # as a contributor's default `pip install -e ".[dev]"` setup.
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check src tests scripts
+      - run: pytest -v
+
+  docker-default:
+    name: Docker image (default, with Hugging Face extra)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the full CPU image, waits for its HEALTHCHECK, then calls
+      # /health and /generate on the default port 8000.
+      - run: scripts/docker_smoke_test.sh
+
+  docker-mock:
+    name: Docker image (mock-only, cloud $PORT)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg INSTALL_HUGGINGFACE=false -t inference-lab:mock .
+      # Simulates a managed platform (Render/Cloud Run) injecting $PORT.
+      - run: docker run -d --name inference-lab-mock -e PORT=8080 -p 8080:8080 inference-lab:mock
+      - name: Wait for the app to accept connections
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:8080/health && exit 0
+            sleep 1
+          done
+          docker logs inference-lab-mock
+          exit 1
+      - run: scripts/live_smoke_test.sh http://localhost:8080
+      - name: Container logs
+        if: always()
+        run: docker logs inference-lab-mock || true
